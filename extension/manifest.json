@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Yandex RAR Rescue",
-  "version": "0.2.0",
-  "description": "Diagnose archive viewer frames and recover individual files with a local progress journal.",
+  "version": "0.3.0",
+  "description": "Auto-detect RAR members by title and test per-file download actions with resumable queue.",
   "permissions": [
     "downloads",
     "storage"
@@ -40,6 +40,7 @@
         "https://docviewer.360.yandex.ru/*"
       ],
       "js": [
+        "archive-dom.js",
         "frame-sensor.js"
       ],
       "run_at": "document_idle",
