@@ -5,8 +5,8 @@ A local, **unverified MVP** for recovering files visible in the Yandex Disk arch
 ## Target
 
 - Public archive: https://disk.yandex.ru/d/_RSlWomRWmty1w
-- Displayed archive: \`Диск 2.rar\` (244,374,677 bytes, 1,286 objects including folders)
-- Original SHA256: \`2f980815b8267d1ab6cf5c8f1cf867542fa60b9469a3d0c6c4d15c217c577ad5\`
+- Displayed archive: `Диск 2.rar` (244,374,677 bytes, 1,286 objects including folders)
+- Original SHA256: `2f980815b8267d1ab6cf5c8f1cf867542fa60b9469a3d0c6c4d15c217c577ad5`
 - Independent direct-download tests on Windows and GitHub Actions: HTTP 500 for the original RAR.
 - Goal: recover **individual archive members** through the existing web viewer, without relying on the failing original-file endpoint.
 
@@ -14,18 +14,18 @@ A local, **unverified MVP** for recovering files visible in the Yandex Disk arch
 
 ## Install (Windows / Chrome / Yandex Browser)
 
-1. Download this repository as ZIP, extract it, and navigate to the \`extension\` directory.
-2. Open \`chrome://extensions\` (or your browser's extension management screen).
-3. Enable **Developer mode**, click **Load unpacked**, and select the extracted \`extension\` directory.
+1. Download this repository as ZIP, extract it, and navigate to the `extension` directory.
+2. Open `chrome://extensions` (or your browser's extension management screen).
+3. Enable **Developer mode**, click **Load unpacked**, and select the extracted `extension` directory.
 4. Open the archive viewer on Yandex Disk.
 5. Click the extension's toolbar icon: this opens a small panel in the current page.
 
 ## First-run calibration
 
-1. Open a folder showing several **files** (rather than only folders). Type the relative folder name into the panel, e.g. \`1000005A\`; for files in the archive root leave it blank.
+1. Open a folder showing several **files** (rather than only folders). Type the relative folder name into the panel, e.g. `1000005A`; for files in the archive root leave it blank.
 2. Click **1. Обучить на значке скачивания**, then click the download icon next to an ordinary small file in the Yandex viewer. The extension captures this click, so it will *not* download the file yet.
 3. Confirm that a plausible filename and several matching rows are detected.
-4. Click **2. Пробная загрузка**. Check that a real, nonzero file arrives in the browser's Downloads folder under \`YandexRARRecovery/Disk-2.rar/\`.
+4. Click **2. Пробная загрузка** (bulk mode stays disabled until this pilot succeeds). Check that a real, nonzero file arrives in the browser's Downloads folder under `YandexRARRecovery/Disk-2.rar/`.
 5. After the pilot works, click **3. Скачать текущую папку**. The extension attempts each listed file in sequence, scrolls the visible list, retries failures up to three times, and remembers files marked downloaded.
 6. Navigate manually into another folder, update the relative folder path, and repeat. Click **Остановить после файла** to pause safely.
 
@@ -43,13 +43,13 @@ No HTML dumps, cookies, authorization headers, OAuth tokens or signed download U
 
 ## Implementation and safeguards
 
-- MV3 content script on \`disk.yandex.ru\`, launched only from the toolbar.
+- MV3 content script on `disk.yandex.ru`, launched only from the toolbar.
 - Train one item download icon to learn the row structure; automated clicks reuse the site's own download action.
-- \`chrome.downloads.onCreated\` and \`onChanged\` track actual browser results, while \`onDeterminingFilename\` assigns a bounded relative path under Downloads.
+- `chrome.downloads.onCreated` and `onChanged` track actual browser results, while `onDeterminingFilename` assigns a bounded relative path under Downloads.
 - Only matched Yandex-hosted downloads from the active tab are associated with an armed request.
-- Sequential queue and backoff; local \`chrome.storage.local\` ledger prevents re-downloading files marked complete after a restart.
+- Sequential queue and backoff; local `chrome.storage.local` ledger prevents re-downloading files marked complete after a restart.
 - Session-scoped pending downloads are preserved across service-worker suspension.
-- Relative paths are normalized; absolute paths and \`..\` segments are rejected.
+- Relative paths are normalized; absolute paths and `..` segments are rejected.
 - No embedded credentials, request interception, telemetry, or upload endpoints.
 
 **Important:** “downloaded” means Chrome reported a completed, nonempty transfer (with consistent byte count if known), **not** checksum verification. Some files may be unavailable on Yandex's servers. The original RAR SHA-256 does not verify a reconstructed archive.
