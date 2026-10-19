@@ -60,8 +60,10 @@
     if (message.inspectOnly === true) {
       return {ok:true,clicked:false,inspected:true,name,mode:action.mode,slots:action.slotCount};
     }
+    const userActivation=Boolean(navigator.userActivation?.isActive);
     action.element.click();
-    return {ok:true,clicked:true,name,mode:action.mode,slots:action.slotCount};
+    return {ok:true,clicked:true,name,mode:action.mode,slots:action.slotCount,
+      userActivationAtClick:userActivation,syntheticClick:true};
   }
 
   function scroll(message) {
