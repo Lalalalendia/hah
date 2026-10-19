@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Yandex RAR Rescue (experimental)",
+  "version": "0.1.0",
+  "description": "Download individual files from Yandex Disk archive preview with retries and local progress tracking.",
+  "permissions": [
+    "downloads",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://disk.yandex.ru/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "RAR Rescue - open recovery panel"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://disk.yandex.ru/*"
+      ],
+      "js": [
+        "common.js",
+        "content.js"
+      ],
+      "css": [
+        "panel.css"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
