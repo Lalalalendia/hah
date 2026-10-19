@@ -122,9 +122,12 @@ chrome.downloads.onChanged.addListener(delta => {
     }
     const received = Number(item.bytesReceived) || 0;
     const total = Number(item.totalBytes);
-    const good = received > 0 && !(total > 0 && received !== total);
+    const finalPath = String(item.filename || "").replace(/\\/g, "/");
+    const rightPath = finalPath.toLowerCase().endsWith(record.target.toLowerCase());
+    const good = received > 0 && !(total > 0 && received !== total) && rightPath;
     return complete(record, good ? "downloaded" : "failed",
-      good ? "Browser download complete; checksum not verified" : "Zero or inconsistent downloaded bytes", item);
+      good ? "Browser download complete; checksum not verified" :
+        (!rightPath ? "Download path was not controlled by extension" : "Zero or inconsistent downloaded bytes"), item);
   })();
 });
 
