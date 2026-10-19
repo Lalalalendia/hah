@@ -306,7 +306,7 @@ chrome.downloads.onCreated.addListener(item => {
     if (!RarRescueUtils.isDownloadHost(item.url)) return;
     const record = findActiveWatcher(item);
     if (!record || record.downloadId != null) return;
-    if (Date.now() - record.started > 45000) return;
+    if (Date.now()-record.started > PENDING_WINDOW_MS) return;
     record.downloadId = item.id;
     await saveWatchers();
     await notify(record.tabId, { kind: "RR_STARTED", token: record.token });
@@ -333,21 +333,10 @@ chrome.downloads.onChanged.addListener(delta => {
   if (!delta.state || !["complete", "interrupted"].includes(delta.state.current)) return;
   void (async () => {
     await ready;
-    const record = findByDownloadId(delta.id);
-    if (!record) return;
-    const items = await chrome.downloads.search({ id: delta.id });
-    const item = items[0] || {};
-    if (delta.state.current === "interrupted") {
-      return complete(record, "failed", (delta.error && delta.error.current) || item.error || "interrupted", item);
-    }
-    const received = Number(item.bytesReceived) || 0;
-    const total = Number(item.totalBytes);
-    const finalPath = String(item.filename || "").replace(/\\/g, "/");
-    const rightPath = finalPath.toLowerCase().endsWith(record.target.toLowerCase());
-    const good = received > 0 && !(total > 0 && received !== total) && rightPath;
-    return complete(record, good ? "downloaded" : "failed",
-      good ? "Browser download complete; checksum not verified" :
-        (!rightPath ? "Download path was not controlled by extension" : "Zero or inconsistent downloaded bytes"), item);
+    const record=findByDownloadId(delta.id);
+    if(!record)return;
+    const item=(await chrome.downloads.search({id:delta.id}))[0] || {};
+    await completeFromChrome(record,item);
   })();
 });
 
