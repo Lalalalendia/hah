@@ -87,5 +87,24 @@ function dispatch(message) {
   assert(!JSON.stringify(suggestion).includes("DO_NOT_LEAK"));
   const release=await dispatch({kind:"RR_RELEASE",token:"nested-test"});
   assert(release.ok);
-  console.log("OK: nested Windows download paths, safe non-overwrite policy and sanitized history");
+  const cross=await dispatch({
+    kind:"RR_ARM",token:"cross-tab-test",key:"Disk-2.rar/README.TXT",
+    folder:"",filename:"README.TXT"
+  });
+  assert(cross.ok);
+  const mismatched=await new Promise(resolve=>{
+    filenameHandler({id:1002,tabId:88,
+      filename:"OTHER.TXT",
+      url:"https://docviewer.yandex.ru/download"},resolve);
+  });
+  assert.equal(mismatched,undefined);
+  const foreignTab=await new Promise(resolve=>{
+    filenameHandler({id:1003,tabId:88,
+      filename:"README.TXT",url:"https://docviewer.yandex.ru/download"},resolve);
+  });
+  assert.equal(foreignTab.filename,"YandexRARRecovery/Disk-2.rar/README.TXT");
+  assert.equal(foreignTab.conflictAction,"uniquify");
+  const released=await dispatch({kind:"RR_RELEASE",token:"cross-tab-test"});
+  assert(released.ok);
+  console.log("OK: nested paths, foreign-tab docviewer correlation, disjoint filenames, and no signed URLs");
 })().catch(e=>{console.error(e);process.exitCode=1;});
