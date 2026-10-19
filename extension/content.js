@@ -211,7 +211,12 @@
     const roster=await inFrame(frame.frameId,{kind:"RR_SENSOR_LIST"});
     const ledger=await countDownloads();
     const files=(roster.items||[]).filter(row=>row.kind==="file");
-    const candidates=files.filter(row=>/\.(?:txt|xml|htm|html|md|log|ini)$/i.test(row.name));
+    const priority=["LOG4J.XML","INDEX.HTM","README.TXT"];
+    const candidates=files.filter(row=>/\.(?:txt|xml|htm|html|md|log|ini)$/i.test(row.name))
+      .sort((a,b)=>{
+        const ia=priority.indexOf(a.name),ib=priority.indexOf(b.name);
+        return (ia<0?100:ia)-(ib<0?100:ib);
+      });
     return candidates.find(row=>
       !["downloaded","armed","awaiting","needs-review"].includes(
         ledger[keyFor(row.name)]?.state
