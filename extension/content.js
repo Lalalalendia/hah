@@ -1,8 +1,10 @@
-/* Main-frame controller for Yandex RAR Rescue v0.4.
+/* Main-frame controller for Yandex RAR Rescue v0.5.
    Never reads account cookies, document payloads or signed download URLs. */
 (() => {
   "use strict";
   const LEDGER_KEY = "rr_ledger";
+  const TREE_KEY = "rr_tree_v05";
+  const EXPECTED_OBJECTS = 1286;
   const ARCHIVE = "Disk-2.rar";
   const sleep = ms => new Promise(resolve => setTimeout(resolve,ms));
   let panel = null, folder = "", frames = new Map(), scanId = "", scanning = false;
@@ -11,6 +13,9 @@
   let notice = "Используем названия файлов и кнопки на скриншотах DevTools.";
   let progress = "";
   let lastInspection = [];
+  let tree = null;
+  let treePhase = "";
+  let treeFrame = null;
 
   function show(message) {
     events.unshift(new Date().toLocaleTimeString() + " " + message);
@@ -32,7 +37,7 @@
     if (parts.some(p => p === ".." || p.startsWith("~"))) throw new Error("Недопустимый путь");
     return parts.filter(p => p && p !== ".").join("/");
   }
-  const keyFor = name => ARCHIVE + "/" + (folder ? folder + "/" : "") + name;
+  const keyFor = (name, subfolder=folder) => ARCHIVE + "/" + (subfolder ? subfolder + "/" : "") + name;
   async function countDownloads() {
     const state = (await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY] || {};
     downloaded = Object.values(state).filter(x=>x.state==="downloaded").length;
@@ -62,12 +67,24 @@
     if (el("rr-progress")) el("rr-progress").textContent = (progress ? progress+" · " : "") +
       notice+" · успешно: "+downloaded+", ошибки: "+failed;
     if (el("rr-log")) el("rr-log").textContent = events.slice(0,9).join("\n") || "Ожидаю проверки.";
+    if (el("rr-tree")) el("rr-tree").textContent = !tree ? "Манифест дерева ещё не построен." :
+      ("Карта: " + Object.keys(tree.directories || {}).length + " каталогов, " +
+       Object.keys(tree.files || {}).length + " файлов; объектов просмотрено: " +
+       (tree.observedObjects || 0) + "/" + EXPECTED_OBJECTS +
+       "; непроверенных объектов: " + (tree.unknown || []).length +
+       "; проблем: " + (tree.issues || []).length +
+       "; состояние: " + (tree.complete ? "полное" : tree.scanned ? "частичное" : "обход не завершён"));
     if (el("rr-scan")) el("rr-scan").disabled = running;
     if (el("rr-pilot")) el("rr-pilot").disabled = running || !best;
     if (el("rr-check")) el("rr-check").disabled = running || !best;
     if (el("rr-batch")) el("rr-batch").disabled = running || !approved || !best ||
       approved.frameId !== best.frameId;
     if (el("rr-stop")) el("rr-stop").disabled = !running;
+    if (el("rr-inventory")) el("rr-inventory").disabled = running || !bestFrame();
+    if (el("rr-recover")) el("rr-recover").disabled = running || !bestFrame() ||
+      !approved || !tree || !tree.scanned || !tree.complete ||
+      approved.frameId !== bestFrame().frameId;
+    if (el("rr-report")) el("rr-report").disabled = !tree;
   }
 
   function mount() {
@@ -75,24 +92,29 @@
     panel=document.createElement("section");
     panel.id="rr-recovery-panel";
     panel.innerHTML = [
-      '<header><strong>RAR Rescue v0.4</strong><button id="rr-close" title="Закрыть">×</button></header>',
-      '<p>Диск 2.rar — 1286 объектов, включая папки. Ручное обучение больше не требуется.</p>',
+      '<header><strong>RAR Rescue v0.5</strong><button id="rr-close" title="Закрыть">×</button></header>',
+      '<p>Диск 2.rar — 1286 объектов, включая папки. Полное восстановление сохраняет пути и ведёт журнал.</p>',
       '<div class="rr-actions"><button id="rr-scan">1. Найти файлы</button><button id="rr-check">2. Учесть скачанный README</button></div>',
       '<div class="rr-actions"><button id="rr-pilot">3. Проверить новую загрузку</button></div>',
       '<p id="rr-status" role="status"></p><p id="rr-found"></p>',
       '<label>Путь открытой папки внутри архива (в корне оставь пустым)<input id="rr-folder" type="text" placeholder="например, HELP" autocomplete="off"></label>',
-      '<div class="rr-actions"><button id="rr-batch">4. Скачать текущую папку</button><button id="rr-stop">Остановить</button></div>',
+      '<div class="rr-actions"><button id="rr-inventory">4. Обойти все папки</button><button id="rr-stop">Остановить</button></div>',
+      '<div class="rr-actions"><button id="rr-recover">5. Скачать всё со структурой</button><button id="rr-report">Отчёт JSON</button></div>',
+      '<p id="rr-tree"></p>',
       '<p id="rr-progress" role="status"></p>',
       '<div class="rr-actions"><button id="rr-copy">Скопировать диагностику</button></div>',
       '<pre id="rr-log"></pre>',
-      '<small>Сначала учти уже скачанный README (не скачивая его ещё раз). Если браузер не сохранил его в Recovery, запусти новую пробную загрузку. EXE/CMD не запускаются.</small>'
+      '<small>Сначала нажми «Обойти все папки». Загрузка всего дерева разрешается только если обход завершён, неизвестных объектов нет, число объектов сходится с 1286 и подтверждён тестовый файл. При прерывании вернись в корень архива. EXE/CMD никогда не запускаются.</small>'
     ].join("");
     document.body.append(panel);
     el("rr-close").addEventListener("click",()=>{panel.remove();panel=null;});
     el("rr-scan").addEventListener("click",()=>{void scan();});
     el("rr-check").addEventListener("click",()=>{void inspectReadme();});
     el("rr-pilot").addEventListener("click",()=>{void pilot();});
-    el("rr-batch").addEventListener("click",()=>{void batch();});
+    el("rr-batch")?.addEventListener("click",()=>{void batch();});
+    el("rr-inventory").addEventListener("click",()=>{void inventoryTree();});
+    el("rr-recover").addEventListener("click",()=>{void recoverTree();});
+    el("rr-report").addEventListener("click",()=>{void exportReport();});
     el("rr-stop").addEventListener("click",()=>{stopRequested=true;show("Остановить после текущего файла.");});
     el("rr-copy").addEventListener("click",()=>{void diagnostics();});
     el("rr-folder").addEventListener("change",()=>{approved=null;render();});
@@ -178,7 +200,7 @@
     task.resolve(outcome);
   }
 
-  async function downloadOnce(frameId,name, pilotMode,approvedMode) {
+  async function downloadOnce(frameId,name,pilotMode,approvedMode,subfolder=folder) {
     const token=String(Date.now())+"-"+Math.random().toString(36).slice(2);
     let done;
     const wait = new Promise(resolve=>{done=resolve;});
@@ -192,7 +214,7 @@
     armTimer();
     let action;
     try {
-      await send({kind:"RR_ARM",token,key:keyFor(name),folder,filename:name});
+      await send({kind:"RR_ARM",token,key:keyFor(name,subfolder),folder:subfolder,filename:name});
       action=await inFrame(frameId,{
         kind:"RR_SENSOR_TRIGGER",name,pilot:pilotMode,
         approvedMode:approvedMode?.mode || null,
@@ -212,17 +234,17 @@
     return { ...result, mode:action.mode, slots:action.slots };
   }
 
-  async function retryDownload(frameId,name,pilotMode,approvedMode,maxRetries) {
+  async function retryDownload(frameId,name,pilotMode,approvedMode,maxRetries,subfolder=folder) {
     for (let attempt=1;attempt<=maxRetries&&!stopRequested;attempt++) {
       progress = name + " · попытка " + attempt + "/" + maxRetries;render();
-      const result=await downloadOnce(frameId,name,pilotMode,approvedMode);
+      const result=await downloadOnce(frameId,name,pilotMode,approvedMode,subfolder);
       if (result.state==="downloaded") return result;
       show(name+": "+result.state+" · "+(result.reason || ""));
       // The Yandex viewer may trigger a download that escaped our onCreated
       // correlation. Before retrying, check browser history for the SAME
       // filename and recovery directory. Otherwise duplicate writes are likely.
       try {
-        const recent=await send({kind:"RR_INSPECT_DOWNLOADS",filename:name,folder});
+        const recent=await send({kind:"RR_INSPECT_DOWNLOADS",filename:name,folder:subfolder});
         lastInspection=recent.matches || [];
         const active=lastInspection.find(x=>x.ageSeconds<90 && x.state==="in_progress");
         if(active) {
@@ -233,7 +255,7 @@
           x.savedToRecovery && x.exists!==false);
         if(complete && result.mode && Number.isFinite(result.slots)) {
           const ledger=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY] || {};
-          ledger[keyFor(name)]={
+          ledger[keyFor(name,subfolder)]={
             state:"downloaded",bytes:complete.bytes,time:new Date().toISOString(),
             method:"recent-browser-reconciliation",downloadId:complete.id
           };
@@ -319,7 +341,7 @@
 
   async function diagnostics() {
     const report={
-      tool:"RAR Rescue v0.4",
+      tool:"RAR Rescue v0.5",
       targetArchive:"Disk 2.rar",
       frames:[...frames.values()].map(x=>({
         id:x.frameId,host:x.host,count:x.count,folders:x.folders,unknown:x.unknown,
@@ -328,6 +350,9 @@
       })),
       approved:approved?{mode:approved.mode,slots:approved.slots,host:approved.host}:null,
       lastInspection,
+      treeSummary: tree ? {scanned:tree.scanned,complete:tree.complete,objects:tree.observedObjects,
+        directories:Object.keys(tree.directories||{}).length,files:Object.keys(tree.files||{}).length,
+        issues:(tree.issues||[]).slice(0,10),unknown:(tree.unknown||[]).slice(0,10)} : null,
       downloaded,failed,events:events.slice(0,15)
     };
     try {
@@ -361,4 +386,7 @@
     }
   });
   void countDownloads().catch(()=>{});
+  void chrome.storage.local.get(TREE_KEY).then(data=>{
+    tree=data[TREE_KEY] || null;render();
+  }).catch(()=>{});
 })();
