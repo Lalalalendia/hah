@@ -30,6 +30,17 @@ async function notify(tabId, payload) {
 function findByDownloadId(id) {
   return Object.values(watchers).find(w => w.downloadId === id);
 }
+function findActiveWatcher(item) {
+  if (!RarRescueUtils.isDownloadHost(item.url || "")) return null;
+  const direct = watchers[String(item.tabId)];
+  if (direct && Date.now() - direct.started < 120000) return direct;
+  // Certain Yandex-created downloads have tabId=-1. Only correlate when
+  // there is exactly ONE armed tab and its request is still very recent.
+  if (item.tabId !== -1) return null;
+  const candidates = Object.values(watchers).filter(w =>
+    Date.now() - w.started < 25000 && w.downloadId == null);
+  return candidates.length === 1 ? candidates[0] : null;
+}
 
 async function complete(record, status, reason, item) {
   if (watchers[String(record.tabId)] !== record) return;
@@ -64,7 +75,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     const tabId = sender.tab.id;
     if (message.kind === "RR_SENSOR_REPORT" || message.kind === "RR_SENSOR_PICKED") {
       const allowed = message.kind === "RR_SENSOR_REPORT" ?
-        ["kind", "requestId", "host", "top", "names", "count", "archiveMarker", "frames", "knownReadme"] :
+        ["kind", "requestId", "host", "names", "count", "folders", "unknown", "rowSelector", "example", "knownReadme"] :
         ["kind", "host", "found", "name", "ancestry", "clickedTag", "count"];
       const sanitized = {};
       for (const field of allowed) if (Object.prototype.hasOwnProperty.call(message, field)) sanitized[field] = message[field];
@@ -87,6 +98,18 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       respond({ ok: true });
       return;
     }
+    if (message.kind === "RR_FRAME_CALL") {
+      if (sender.frameId !== 0) throw new Error("Only the top-level panel can call viewer");
+      const frameId = Number(message.frameId);
+      if (!Number.isInteger(frameId) || frameId < 0) throw new Error("Invalid viewer frame");
+      const payload = message.payload || {};
+      if (!["RR_SENSOR_LIST", "RR_SENSOR_TRIGGER", "RR_SENSOR_SCROLL"].includes(payload.kind)) {
+        throw new Error("Unsupported viewer command");
+      }
+      const result = await chrome.tabs.sendMessage(tabId, payload, { frameId });
+      respond(result && typeof result === "object" ? result : {ok:false,error:"Viewer did not respond"});
+      return;
+    }
     if (message.kind === "RR_ARM") {
       if (sender.frameId !== 0) throw new Error("Only the top-level panel can arm a download");
       const token = String(message.token || "").slice(0, 80);
@@ -101,6 +124,13 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       };
       await saveWatchers();
       respond({ ok: true });
+    } else if (message.kind === "RR_RELEASE") {
+      const active = watchers[String(tabId)];
+      if (active && active.token === message.token) {
+        delete watchers[String(tabId)];
+        await saveWatchers();
+      }
+      respond({ok:true});
     } else if (message.kind === "RR_DISARM") {
       const active = watchers[String(tabId)];
       if (active && active.token === message.token && active.downloadId == null) {
@@ -119,7 +149,7 @@ chrome.downloads.onCreated.addListener(item => {
   void (async () => {
     await ready;
     if (!RarRescueUtils.isDownloadHost(item.url)) return;
-    const record = watchers[String(item.tabId)];
+    const record = findActiveWatcher(item);
     if (!record || record.downloadId != null) return;
     if (Date.now() - record.started > 45000) return;
     record.downloadId = item.id;
@@ -131,12 +161,13 @@ chrome.downloads.onCreated.addListener(item => {
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
   void (async () => {
     await ready;
-    const record = findByDownloadId(item.id) || watchers[String(item.tabId)];
+    const record = findByDownloadId(item.id) || findActiveWatcher(item);
     if (!record || !RarRescueUtils.isDownloadHost(item.url) ||
         (record.downloadId != null && record.downloadId !== item.id)) return suggest();
     if (record.downloadId == null) {
       record.downloadId = item.id;
       await saveWatchers();
+      await notify(record.tabId, {kind:"RR_STARTED",token:record.token,linkMode:"download"});
     }
     suggest({ filename: record.target, conflictAction: "overwrite" });
   })().catch(() => suggest());
