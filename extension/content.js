@@ -85,6 +85,7 @@
       !approved || !tree || !tree.scanned || !tree.complete ||
       approved.frameId !== bestFrame().frameId;
     if (el("rr-report")) el("rr-report").disabled = !tree;
+    if (el("rr-empty")) el("rr-empty").disabled = running || !tree || !tree.scanned;
   }
 
   function mount() {
@@ -100,6 +101,7 @@
       '<label>Путь открытой папки внутри архива (в корне оставь пустым)<input id="rr-folder" type="text" placeholder="например, HELP" autocomplete="off"></label>',
       '<div class="rr-actions"><button id="rr-inventory">4. Обойти все папки</button><button id="rr-stop">Остановить</button></div>',
       '<div class="rr-actions"><button id="rr-recover">5. Скачать всё со структурой</button><button id="rr-report">Отчёт JSON</button></div>',
+      '<div class="rr-actions"><button id="rr-empty">Создать пустые каталоги</button></div>',
       '<p id="rr-tree"></p>',
       '<p id="rr-progress" role="status"></p>',
       '<div class="rr-actions"><button id="rr-copy">Скопировать диагностику</button></div>',
@@ -114,7 +116,8 @@
     el("rr-batch")?.addEventListener("click",()=>{void batch();});
     el("rr-inventory").addEventListener("click",()=>{void inventoryTree();});
     el("rr-recover").addEventListener("click",()=>{void recoverTree();});
-    el("rr-report").addEventListener("click",()=>{void exportReport();});
+    el("rr-report").addEventListener("click",()=>{exportReport();});
+    el("rr-empty").addEventListener("click",()=>{void createEmptyDirectories();});
     el("rr-stop").addEventListener("click",()=>{stopRequested=true;show("Остановить после текущего файла.");});
     el("rr-copy").addEventListener("click",()=>{void diagnostics();});
     el("rr-folder").addEventListener("change",()=>{approved=null;render();});
@@ -549,6 +552,50 @@
     } finally {
       running=false;stopRequested=false;treePhase="";treeFrame=null;progress="";
       await countDownloads();render();
+    }
+  }
+
+  async function createEmptyDirectories(){
+    if(!tree || !tree.scanned || running)return;
+    if(typeof window.showDirectoryPicker!=="function"){
+      notice="Этот браузер не поддерживает выбор каталога для создания пустых папок. Их пути есть в JSON-отчёте.";
+      show(notice);return;
+    }
+    let chosen;
+    try {
+      // Important: call showDirectoryPicker from the original user click,
+      // before any await or Chrome API request consumes transient activation.
+      chosen=await window.showDirectoryPicker({id:"rar-rescue-output",mode:"readwrite"});
+    }catch(error){
+      notice=error.name==="AbortError"?"Выбор папки отменён":
+        "Нет доступа к папке: "+String(error.message||error);
+      show(notice);return;
+    }
+    if(chosen.name!=="Disk-2.rar"){
+      notice="Выбери именно Downloads/YandexRARRecovery/Disk-2.rar. Ничего не создано.";
+      show(notice);return;
+    }
+    const dirs=Object.values(tree.directories)
+      .filter(item=>item.path && item.empty)
+      .sort((a,b)=>a.path.split("/").length-b.path.split("/").length);
+    let created=0;
+    try {
+      for(const entry of dirs){
+        let handle=chosen;
+        for(const segment of entry.path.split("/")){
+          if(!segment || segment==="." || segment==="..")throw new Error("Недопустимое имя папки");
+          handle=await handle.getDirectoryHandle(RarRescueUtils.component(segment),{create:true});
+        }
+        created++;
+      }
+      tree.emptyDirectoriesCreated=created;
+      await saveTree();
+      notice="Пустые папки восстановлены: "+created+
+        ". Другие каталоги создаются браузером при загрузке файлов.";
+      show(notice);
+    }catch(error){
+      notice="Создано "+created+" пустых папок, затем ошибка: "+String(error.message||error);
+      show(notice);
     }
   }
 
