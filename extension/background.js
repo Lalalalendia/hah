@@ -75,7 +75,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     const tabId = sender.tab.id;
     if (message.kind === "RR_SENSOR_REPORT" || message.kind === "RR_SENSOR_PICKED") {
       const allowed = message.kind === "RR_SENSOR_REPORT" ?
-        ["kind", "requestId", "host", "names", "count", "folders", "unknown", "rowSelector", "example", "knownReadme"] :
+        ["kind", "requestId", "host", "names", "count", "folders", "unknown", "rowSelector", "example", "iconSamples", "knownReadme"] :
         ["kind", "host", "found", "name", "ancestry", "clickedTag", "count"];
       const sanitized = {};
       for (const field of allowed) if (Object.prototype.hasOwnProperty.call(message, field)) sanitized[field] = message[field];
@@ -125,6 +125,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
           bytes:Number(item.bytesReceived)||0,
           size:Number(item.totalBytes)||0,
           savedToRecovery:pathname.toLowerCase().endsWith(expected.toLowerCase()),
+          exists:item.exists !== false,
           sourceHost:host.slice(0,100),
           browserTabMatched:item.tabId === tabId,
           ageSeconds:Math.max(0,Math.round((now-Date.parse(item.startTime))/1000)),
