@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Yandex RAR Rescue",
-  "version": "0.3.0",
-  "description": "Auto-detect RAR members by title and test per-file download actions with resumable queue.",
+  "version": "0.4.0",
+  "description": "Safely inventory RAR preview items, reconcile recent downloads and recover accessible files through Yandex viewer.",
   "permissions": [
     "downloads",
     "storage"
