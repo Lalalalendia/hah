@@ -1,85 +1,69 @@
-# RAR Rescue v0.2 — Yandex Disk archive viewer recovery
+# RAR Rescue v0.3
 
-**Status:** experimental, first live test required. This is not yet a finished recursive downloader.
+Экспериментальное расширение для Яндекс Браузера / Chromium: пофайловая выгрузка содержимого `Диск 2.rar` через просмотрщик Яндекс Диска.
 
-## Why v0.1 failed
+## Суть проблемы
 
-The Yandex Disk parent page embeds the archive viewer in separate iframe documents,
-including `docviewer.yandex.ru` and `docviewer.360.yandex.ru`.
-Version 0.1 injected event handlers only into `disk.yandex.ru`, so it could
-neither see file entries nor capture clicks inside the viewer. Also its
-`visibleRows=0` display was hard-coded to depend on manual calibration.
+Оригинал RAR имеет размер 244 374 677 байт. Попытки скачать его целиком через прямой API URL, HTTP Range и обычный GET возвращают 500 на Windows и на GitHub Actions. В браузерном просмотрщике при этом видны папки и файлы; некоторые отдельные файлы скачиваются.
 
-An independent unauthenticated Chrome/Selenium probe showed the two document
-viewer frames and that `README.TXT` is not in the parent page DOM.
-The actual logged-in viewer's file markup still needs a browser pilot.
+По скриншотам реальной разметки от 19 октября 2026 подтверждено:
 
-## Target
+- корень просмотрщика: `archive_*` / `leftPanel_*` / `listing_*`;
+- имена файлов и папок: `div[title="README.TXT"][class*="resourceItem_"]`;
+- действия файла: `div[class*="actionBar_"]` внутри его строки;
+- иконки обычных файлов: `span.file-icon`;
+- отдельная кнопка скачивания в шапке относится **ко всему RAR** и не должна использоваться.
 
-Public file: https://disk.yandex.ru/d/_RSlWomRWmty1w
+Полный суффикс CSS-классов генерируется Яндексом; расширение использует только префиксы.
 
-- `Диск 2.rar`
-- 244,374,677 bytes
-- SHA-256 of **original RAR**: `2f980815b8267d1ab6cf5c8f1cf867542fa60b9469a3d0c6c4d15c217c577ad5`
-- Viewer reports **1,286 objects, including directories**.
-- Full archive download returns HTTP 500 on both Windows and GitHub Actions.
+## Установка
 
-## Install in Yandex Browser / Chrome
+1. Открой последний успешный прогон **RAR Rescue Extension Checks** в GitHub Actions.
+2. Скачай артефакт **rar-rescue-v03**, распакуй один раз.
+3. В Яндекс Браузере открой `browser://extensions`, включи режим разработчика и отключи старые RAR Rescue v0.1/v0.2.
+4. Нажми «Загрузить распакованное расширение» и выбери папку, содержащую `manifest.json`.
+5. У расширения должен быть доступ к `disk.yandex.ru`, `docviewer.yandex.ru` и `docviewer.360.yandex.ru`. Обнови страницу Диска и открой просмотрщик RAR.
+6. Нажми значок расширения: откроется панель **RAR Rescue v0.3**.
 
-1. From the latest successful **RAR Rescue Extension Checks** GitHub Action,
-   download the `rar-rescue-v02` artifact. **Unzip once**: the unpacked
-   directory contains `manifest.json` directly.
-2. In `browser://extensions` / `chrome://extensions`, enable Developer Mode.
-3. Remove/disable v0.1; use **Load unpacked** and select the directory containing `manifest.json`.
-4. Allow site access for `disk.yandex.ru`, `docviewer.yandex.ru`,
-   and `docviewer.360.yandex.ru` if the browser asks. Reload the Yandex Disk page.
-5. Open the RAR preview and click the extension toolbar icon.
+## Первая проверка (никаких DevTools)
 
-## v0.2 live pilot (about 2 minutes)
+1. В корне архива нажми **1. Найти файлы**. Ожидаем, что панель увидит `README.TXT`, `INDEX.HTM`, `CDVIEWER.EXE` и другие имена.
+2. Нажми **2. Проверить README.TXT**. Расширение само найдёт строку файла и попробует нажать локальный значок скачивания. **Не надо вручную обучать его или искать значок в DevTools**.
+3. Если Chrome/Yandex Browser подтвердит успешное скачивание ненулевого файла, станет доступна кнопка **3. Скачать текущую папку**.
+4. Для вложенной папки открой её штатным способом в просмотрщике и введи относительный путь в поле папки (например `HELP`), затем повтори тест и запусти очередь.
 
-1. Click **1. Найти файлы**. The panel shows how many iframe documents answered
-   and up to 8 filenames. This works **without calibration**.
-2. Click **2. Выбрать файл**. Now click the **name** `README.TXT` on the LEFT side
-   of the Yandex RAR viewer (not an extension button).
-3. The panel should identify `README.TXT` and the frame hostname.
-4. Leave “Путь внутри архива” empty for files in the RAR root.
-5. Click **3. Отследить скачивание**. Hover over `README.TXT` in the Yandex list,
-   then click the download icon that Yandex shows on hover. If the document opened,
-   use its own download action. The extension records the browser's actual result.
-6. Check the browser Downloads folder for
-   `YandexRARRecovery/Disk-2.rar/README.TXT`. Completion does not prove
-   content integrity; open a harmless TXT file and inspect it.
+Файлы сохраняются в `Загрузки/YandexRARRecovery/Disk-2.rar/<папка>`.
+Небольшие TXT можно открывать для проверки, но **не запускай EXE, CMD, SH, скрипты** из архива.
 
-If frame scan or click capture fails, click **Копировать диагностику** and
-share the resulting JSON **after reviewing any file names**. No cookies,
-headers, OAuth tokens, signed direct URLs, account data or full HTML are read.
+## Важные ограничения
 
-**Do not try to run the archive's EXE, BAT, CMD or SH files.**
+- В Яндекс Диске указано **1286 объектов, включая папки**. Это не количество уже восстановленных файлов.
+- Версия v0.3 НЕ обходит вложенные каталоги автоматически. Скачивает только файлы в текущем каталоге, включая прокручиваемые элементы списка, если доступна соответствующая полоса прокрутки.
+- Последнее действие в `actionBar` принимается за кнопку скачивания *только на пробной операции*, если нет подписи кнопки. После успешной загрузки массовая очередь разрешает лишь ту же проверенную структуру кнопок. Другие строки пропускаются с ошибкой.
+- Невозможность получить файл после попыток может означать серверную недоступность данных. Продолжительные HTTP 500 нельзя исправить кликами.
+- Статус downloaded подтверждает **завершение ненулевой загрузки браузером и ожидаемый путь**. Без внутреннего CRC/хэша каждого элемента это не полноценная криптографическая проверка данных.
+- Дубликаты имён и опасные пути нельзя автоматически объединять: требуется проверка отчёта.
+- На отдельных браузерах автоматический `.click()` может не запускать скачивание без жеста пользователя. Если тест завершается ошибкой, используем журнал диагностики для точного исправления, а не запускаем слепую очередь.
 
-## Technical design
+## Диагностика и конфиденциальность
 
-- `content.js`: the control panel in `disk.yandex.ru` only.
-- `frame-sensor.js`: strictly read-only file detection and capture-phase click
-   observation across `disk.yandex.ru`, `docviewer.yandex.ru`, and
-   `docviewer.360.yandex.ru` frames.
-- `background.js`: per-tab forwarding from frame to main panel; browser
-   download tracking, guarded output paths and local ledger.
-- `common.js`: sanitization and download origin allowlist.
-- No network interception, token capture, cookie access, telemetry or servers.
-- On-disk output path is under the default browser Downloads directory.
-- `downloaded` means Chrome completed a nonempty transfer with a
-   consistent size (if known); **it does not mean CRC/SHA verified**.
+Кнопка «Скопировать диагностику» выдаёт только число файлов, имена нескольких объектов, кадр просмотрщика, количество действий и короткие сообщения ошибок. Нет чтения cookies, OAuth, network URL, headers или полного HTML с данными авторизованной сессии. Имена файлов могут быть личными — просматривай отчёт перед отправкой.
 
-## Follow-on scope (after this pilot)
+## План после первой настоящей загрузки
 
-1. Capture a safe structural selector for file rows and their *hover download action*
-   in each viewer frame, without copying full page HTML.
-2. Fully enumerate file and folder metadata (all levels), not only currently
-   visible entries. Build expected vs downloaded vs failed manifest.
-3. Trigger downloads automatically in sequence; retry 500/504/429 with backoff,
-   pause/resume and no redownload of verified files.
-4. Preserve directory hierarchy; inspect file-level CRC / sizes if the viewer exposes them.
-5. Export failures and partial recovery report, then assemble a new archive.
+1. Подтвердить file download, сохранение исходных имён и повторные попытки.
+2. Построить рекурсивный manifest всех папок и файлов (не ограничиваться видимой частью списка).
+3. Автоматически проходить дерево с ограничением параллельности, безопасным журналом, паузой и повторным запуском.
+4. Сравнивать expected/recovered/failed, получать CRC/размеры через API просмотрщика, если доступны.
+5. Собрать новый архив из восстановленных файлов. Его SHA-256 не обязан совпадать с исходным RAR, даже при идентичном содержимом.
 
-The current version **does not** automatically download all 1,286 objects.
-The number includes folders and must not be treated as a count of downloadable files.
+## Разработка
+
+- `archive-dom.js` — отдельные детерминированные правила для DOM (`title/resourceItem/actionBar`).
+- `frame-sensor.js` — выполнение в iframe документа Яндекса.
+- `background.js` — безопасный обмен с кадрами и наблюдение через Chrome downloads API.
+- `content.js` — главная панель, одиночный тест, последовательная очередь, возобновление по локальному журналу.
+- `tests/dom-smoke.cjs` и `tools/test_archive_fixture.py` — статический тест правил и Chrome-интеграция на синтетической HTML-разметке из скриншотов.
+- `extension-check.yml` — публикация артефакта только после успешных тестов.
+
+Все компоненты исходного RAR и пользовательские сессионные данные остаются вне GitHub.
