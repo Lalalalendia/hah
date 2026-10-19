@@ -131,8 +131,13 @@ chrome.downloads.onCreated.addListener(item => {
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
   void (async () => {
     await ready;
-    const record = findByDownloadId(item.id);
-    if (!record || !RarRescueUtils.isDownloadHost(item.url)) return suggest();
+    const record = findByDownloadId(item.id) || watchers[String(item.tabId)];
+    if (!record || !RarRescueUtils.isDownloadHost(item.url) ||
+        (record.downloadId != null && record.downloadId !== item.id)) return suggest();
+    if (record.downloadId == null) {
+      record.downloadId = item.id;
+      await saveWatchers();
+    }
     suggest({ filename: record.target, conflictAction: "overwrite" });
   })().catch(() => suggest());
   return true;
