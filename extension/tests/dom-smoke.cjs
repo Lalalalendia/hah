@@ -34,6 +34,15 @@ function mockRow(name,icon,action=bar) {
       if(selector.includes('file-icon'))return icon==="file"?{}:null;
       if(selector.includes('folder-icon'))return icon==="folder"?{}:null;
       return null;
+    },
+    querySelectorAll(selector) {
+      if(!selector.includes("file-icon"))return [];
+      let classes;
+      if(icon==="folder")classes=["file-icon","file-icon_size_s","file-icon_folder"];
+      else if(icon==="file")classes=["file-icon","file-icon_size_s","file-icon_txt"];
+      else if(icon==="blank-file")classes=["file-icon","file-icon_blank"];
+      else classes=["unknown-icon"];
+      return [{classList:classes,getAttribute(){return null;}}];
     }
   };
 }
@@ -48,6 +57,9 @@ const doc={querySelectorAll(selector) {
 assert.equal(dom.archiveRows(doc).length,3);
 assert.equal(dom.kindOf(folder),"folder");
 assert.equal(dom.kindOf(readme),"file");
+assert.equal(dom.kindOf(mockRow("DICOMDIR","blank-file")),"file");
+assert.equal(dom.kindOf(mockRow("unclassified","unknown")),"unknown");
+assert(dom.iconEvidence(folder).tokens.includes("file-icon_folder"));
 assert.equal(dom.rowNamed(doc,"README.TXT"),readme);
 assert.equal(dom.rowNamed(doc,"JRE"),undefined);
 assert.equal(dom.itemOf(readme).name,"README.TXT");
