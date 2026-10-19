@@ -10,6 +10,7 @@
   let events = [], downloaded = 0, failed = 0;
   let notice = "Используем названия файлов и кнопки на скриншотах DevTools.";
   let progress = "";
+  let lastInspection = [];
 
   function show(message) {
     events.unshift(new Date().toLocaleTimeString() + " " + message);
@@ -63,6 +64,7 @@
     if (el("rr-log")) el("rr-log").textContent = events.slice(0,9).join("\n") || "Ожидаю проверки.";
     if (el("rr-scan")) el("rr-scan").disabled = running;
     if (el("rr-pilot")) el("rr-pilot").disabled = running || !best;
+    if (el("rr-check")) el("rr-check").disabled = running || !best;
     if (el("rr-batch")) el("rr-batch").disabled = running || !approved || !best ||
       approved.frameId !== best.frameId;
     if (el("rr-stop")) el("rr-stop").disabled = !running;
@@ -75,18 +77,20 @@
     panel.innerHTML = [
       '<header><strong>RAR Rescue v0.3</strong><button id="rr-close" title="Закрыть">×</button></header>',
       '<p>Диск 2.rar — 1286 объектов, включая папки. Ручное обучение больше не требуется.</p>',
-      '<div class="rr-actions"><button id="rr-scan">1. Найти файлы</button><button id="rr-pilot">2. Проверить README.TXT</button></div>',
+      '<div class="rr-actions"><button id="rr-scan">1. Найти файлы</button><button id="rr-check">2. Учесть скачанный README</button></div>',
+      '<div class="rr-actions"><button id="rr-pilot">3. Проверить новую загрузку</button></div>',
       '<p id="rr-status" role="status"></p><p id="rr-found"></p>',
       '<label>Путь открытой папки внутри архива (в корне оставь пустым)<input id="rr-folder" type="text" placeholder="например, HELP" autocomplete="off"></label>',
-      '<div class="rr-actions"><button id="rr-batch">3. Скачать текущую папку</button><button id="rr-stop">Остановить</button></div>',
+      '<div class="rr-actions"><button id="rr-batch">4. Скачать текущую папку</button><button id="rr-stop">Остановить</button></div>',
       '<p id="rr-progress" role="status"></p>',
       '<div class="rr-actions"><button id="rr-copy">Скопировать диагностику</button></div>',
       '<pre id="rr-log"></pre>',
-      '<small>Тест нажимает кнопку скачивания внутри строки README.TXT, а не кнопку исходного RAR в заголовке. Очередь включится только после подтверждённой браузером пробной загрузки. EXE/CMD не запускаются.</small>'
+      '<small>Сначала учти уже скачанный README (не скачивая его ещё раз). Если браузер не сохранил его в Recovery, запусти новую пробную загрузку. EXE/CMD не запускаются.</small>'
     ].join("");
     document.body.append(panel);
     el("rr-close").addEventListener("click",()=>{panel.remove();panel=null;});
     el("rr-scan").addEventListener("click",()=>{void scan();});
+    el("rr-check").addEventListener("click",()=>{void inspectReadme();});
     el("rr-pilot").addEventListener("click",()=>{void pilot();});
     el("rr-batch").addEventListener("click",()=>{void batch();});
     el("rr-stop").addEventListener("click",()=>{stopRequested=true;show("Остановить после текущего файла.");});
@@ -117,6 +121,54 @@
     return items.find(x=>x.kind==="file" && x.name==="README.TXT") ||
       items.find(x=>x.kind==="file" && /\.(?:txt|xml|htm|html|md|ini|log)$/i.test(x.name)) ||
       null;
+  }
+
+  async function inspectReadme() {
+    if(running) return;
+    const frame=bestFrame();
+    if(!frame) {notice="Сначала найди файлы.";render();return;}
+    try {folder=folderValue();}
+    catch(error){notice=error.message;render();return;}
+    running=true;render();
+    try {
+      const target=await choosePilot(frame);
+      if(!target) throw new Error("В текущей папке нет текстового файла для сопоставления.");
+      const match=await send({kind:"RR_INSPECT_DOWNLOADS",filename:target.name,folder});
+      lastInspection=match.matches || [];
+      const recovered=lastInspection.find(x =>
+        x.state==="complete" && x.bytes>0 && x.savedToRecovery && x.exists!==false);
+      if(recovered) {
+        const action=await inFrame(frame.frameId,{
+          kind:"RR_SENSOR_TRIGGER",name:target.name,pilot:true,inspectOnly:true
+        });
+        if(!action.ok || !action.mode || !Number.isFinite(action.slots)) {
+          notice="Скачанный файл в Recovery найден, но расположение кнопки Яндекса изменилось. Новые загрузки пока заблокированы.";
+          show(notice);return;
+        }
+        const ledger=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY] || {};
+        ledger[keyFor(target.name)] = {
+          state:"downloaded",bytes:recovered.bytes,time:new Date().toISOString(),
+          method:"verified-browser-history",downloadId:recovered.id
+        };
+        await chrome.storage.local.set({[LEDGER_KEY]:ledger});
+        approved={frameId:frame.frameId,mode:action.mode,slots:action.slots,
+          checkedFile:target.name,host:frame.host};
+        await countDownloads();
+        notice="Браузер подтвердил "+target.name+" в папке Recovery ("+
+          recovered.bytes+" байт). Теперь можно скачивать остальные файлы текущей папки.";
+      } else if(lastInspection.some(x=>x.state==="complete" && x.bytes>0)) {
+        notice="Браузер действительно скачал "+target.name+
+          ", но файл оказался НЕ в папке YandexRARRecovery. Запусти пробную загрузку из панели — очередь пока не разблокирована.";
+      } else if(lastInspection.length) {
+        notice="Загрузка в истории браузера найдена, но не завершена: "+
+          lastInspection.map(x=>x.state+(x.error?"/"+x.error:"")).join(", ");
+      } else {
+        notice="В последних загрузках браузера нет подтверждённого "+target.name+
+          ". Используй «Проверить новую загрузку» либо пришли диагностику.";
+      }
+      show(notice);
+    } catch(error){notice="Ошибка учёта: "+error.message;show(notice);}
+    finally {running=false;render();}
   }
 
   function clearPending(outcome) {
@@ -246,9 +298,11 @@
       targetArchive:"Disk 2.rar",
       frames:[...frames.values()].map(x=>({
         id:x.frameId,host:x.host,count:x.count,folders:x.folders,unknown:x.unknown,
-        sampleNames:(x.names||[]).slice(0,8),example:x.example||null
+        sampleNames:(x.names||[]).slice(0,8),example:x.example||null,
+        iconSamples:(x.iconSamples||[]).slice(0,16)
       })),
       approved:approved?{mode:approved.mode,slots:approved.slots,host:approved.host}:null,
+      lastInspection,
       downloaded,failed,events:events.slice(0,15)
     };
     try {
