@@ -234,8 +234,13 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       respond({ok:true});
     } else if(message.kind==="RR_CLICK_SENT") {
       const record=watchers[String(tabId)];
-      if(!record || record.token!==message.token)
+      if(!record || record.token!==message.token) {
+        const ledger=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY]||{};
+        if(Object.values(ledger).some(x=>x.token===message.token && x.state==="downloaded")){
+          respond({ok:true,completedAlready:true});return;
+        }
         throw new Error("No matching armed file");
+      }
       record.clicked=true;
       await saveWatchers();
       const ledger=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY]||{};
