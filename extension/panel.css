@@ -1,0 +1,33 @@
+#rr-recovery-panel {
+  all: initial;
+  position: fixed;
+  z-index: 2147483647;
+  top: 18px;
+  right: 18px;
+  width: 375px;
+  max-width: calc(100vw - 36px);
+  max-height: calc(100vh - 36px);
+  overflow: auto;
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border: 1px solid #d1d5db;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 10px 32px #0003;
+  color: #111827;
+  font: 13px/1.4 system-ui, -apple-system, sans-serif;
+}
+#rr-recovery-panel * { box-sizing: border-box; font-family: inherit; }
+#rr-recovery-panel header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+#rr-recovery-panel header strong { font-size: 15px; }
+#rr-recovery-panel p { margin: 10px 0; font-size: 12px; }
+#rr-recovery-panel label { display: block; font-size: 12px; }
+#rr-recovery-panel input { display: block; width: 100%; padding: 8px; margin-top: 6px; border: 1px solid #9ca3af; border-radius: 7px; color: #111827; background: #fff; }
+#rr-recovery-panel .rr-actions { display: flex; gap: 6px; margin-top: 7px; }
+#rr-recovery-panel button { flex: 1 1 0; min-width: 0; font-size: 11px; line-height: 1.35; color: #111827; background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 8px; padding: 8px 7px; cursor: pointer; }
+#rr-recovery-panel button:hover { background: #dbeafe; }
+#rr-recovery-panel button:disabled { opacity: .45; cursor: not-allowed; }
+#rr-recovery-panel #rr-close { flex: 0 0 auto; padding: 3px 8px; background: transparent; font-size: 18px; }
+#rr-recovery-panel #rr-status { padding: 8px; background: #f3f4f6; border-radius: 7px; }
+#rr-recovery-panel pre { overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.4 ui-monospace, monospace; max-height: 150px; background: #111827; color: #fff; padding: 8px; border-radius: 7px; }
+#rr-recovery-panel small { font-size: 10px; color: #4b5563; }
