@@ -207,6 +207,17 @@
 
   const START_WAIT_MS=8*60*1000;
   const COMPLETE_WAIT_MS=30*60*1000;
+  async function chooseFreshPilot(frame) {
+    const roster=await inFrame(frame.frameId,{kind:"RR_SENSOR_LIST"});
+    const ledger=await countDownloads();
+    const files=(roster.items||[]).filter(row=>row.kind==="file");
+    const candidates=files.filter(row=>/\.(?:txt|xml|htm|html|md|log|ini)$/i.test(row.name));
+    return candidates.find(row=>
+      !["downloaded","armed","awaiting","needs-review"].includes(
+        ledger[keyFor(row.name)]?.state
+      ))||null;
+  }
+
   function clearPending(outcome) {
     if(!pending)return;
     const task=pending;
@@ -318,8 +329,8 @@
     catch(error) {notice=error.message;render();return;}
     running=true;stopRequested=false;approved=null;render();
     try {
-      const target=await choosePilot(frame);
-      if (!target) throw new Error("В этой папке нет README.TXT или другого небольшого текстового файла.");
+      const target=await chooseFreshPilot(frame);
+      if (!target) throw new Error("Все подходящие пробные файлы уже скачаны или ожидают проверки. Повторный запрос заблокирован.");
       show("Пробный файл: "+target.name+". Запускаю его кнопку скачивания внутри строки.");
       const result=await retryDownload(frame.frameId,target.name,true,null,1);
       if (result.state==="downloaded") {
@@ -708,8 +719,22 @@
     if(message.kind==="RR_STARTED" && pending && message.token===pending.token) {
       markDownloadStarted(message.token);
     }
-    if(message.kind==="RR_RESULT" && pending && message.token===pending.token) {
-      clearPending(message);
+    if(message.kind==="RR_RESULT") {
+      if(pending && message.token===pending.token) clearPending(message);
+      else {
+        // Yandex sometimes delivers a file after the earlier wait timed out.
+        // Such a late success must be recorded but must never trigger re-click.
+        notice="Запоздалый результат: "+(message.key||"файл")+" — "+message.state;
+        if(tree && message.key?.startsWith("Disk-2.rar/")) {
+          const path=message.key.slice("Disk-2.rar/".length);
+          if(tree.files[path]) {
+            tree.files[path].status=message.state==="downloaded"?"downloaded":"needs-review";
+            tree.files[path].bytes=message.bytes||0;
+            void saveTree().catch(()=>{});
+          }
+        }
+      }
+      void countDownloads().catch(()=>{});
       show("Результат загрузки: "+message.state+
         " ("+(message.bytes||0)+" байт)"+(message.state==="downloaded"?"":": "+message.reason));
     }
