@@ -558,6 +558,113 @@
     }
   }
 
+  /* Bounded acceptance: exactly two source files from two different nested
+   * directories. Uses the same full-tree crawler as actual recovery, but
+   * never starts another file until the browser confirmed a previous one.
+   */
+  async function acceptNestedPaths(){
+    if(running || !approved || !tree?.complete || tree.nestedPilot?.passed)return;
+    const frame=bestFrame();
+    if(!frame || frame.frameId!==approved.frameId) {
+      notice="Открой корень того же RAR и заново проверь автоматический клик.";
+      show(notice);return;
+    }
+    let plan;
+    try {
+      const local=await countDownloads();
+      plan=RarRescuePlan.selectTwo(tree,local);
+      if(!plan.ok)throw new Error(plan.error||"Нет двух подходящих файлов");
+    }catch(error){notice="Не могу запустить двойную приёмку: "+error.message;show(notice);return;}
+    running=true;stopRequested=false;treePhase="nested-pilot";treeFrame=frame.frameId;
+    nestedPilotPlan=plan;
+    const wanted=new Map(plan.files.map(f=>[f.sourcePath,f]));
+    const confirmed=new Set();
+    tree.nestedPilot={passed:false,status:"running",
+      startedAt:new Date().toISOString(),files:plan.files.map(f=>f.sourcePath),
+      sameBasename:plan.sameBasename,verifiedPaths:[]};
+    await saveTree();
+    notice="Проверяю два вложенных пути: "+plan.files.map(f=>f.sourcePath).join(" и ")+
+      ". Каждый файл будет запрошен только один раз.";
+    show(notice);
+    try {
+      let item=await inFrame(frame.frameId,{kind:"RR_SENSOR_CRAWL_BEGIN"});
+      if(!item.ok)throw new Error(item.error||"Нужно открыть корень RAR");
+      for(let step=0;step<EXPECTED_OBJECTS*3 && !stopRequested;step++){
+        if(item.event==="directory"){
+          const manifestDir=tree.directories[item.path];
+          if(!manifestDir)throw new Error("Нет каталога в манифесте: "+item.path);
+          const expected=manifestDir.entries.map(x=>x.kind+"|"+x.name).sort();
+          const actual=(item.items||[]).map(x=>x.kind+"|"+x.name).sort();
+          if(JSON.stringify(actual)!==JSON.stringify(expected))
+            throw new Error("Содержимое каталога изменилось: "+(item.path||"[корень]"));
+          for(const selected of plan.files.filter(f=>f.folder===item.path)){
+            if(stopRequested)break;
+            if(confirmed.has(selected.sourcePath))continue;
+            if(!(item.items||[]).some(x=>x.kind==="file" && x.name===selected.name))
+              throw new Error("Не найден выбранный файл: "+selected.sourcePath);
+            const ledger=await countDownloads();
+            const key="Disk-2.rar/"+selected.sourcePath;
+            if(["downloaded","armed","awaiting","needs-review"].includes(ledger[key]?.state))
+              throw new Error("Этот путь уже скачан или ещё обрабатывается: "+selected.sourcePath);
+            const record=tree.files[selected.sourcePath];
+            progress="Вложенный файл "+(confirmed.size+1)+"/"+NESTED_PILOT_LIMIT+
+              ": "+selected.sourcePath;
+            render();
+            const result=await retryDownload(frame.frameId,selected.name,false,approved,1,selected.folder);
+            record.attempts=(record.attempts||0)+1;
+            record.status=result.state==="downloaded"?"downloaded":"needs-review";
+            record.bytes=Number(result.bytes)||0;
+            record.error=result.state==="downloaded"?"":String(result.reason||result.state).slice(0,160);
+            if(result.state==="downloaded"){
+              confirmed.add(selected.sourcePath);
+              tree.nestedPilot.verifiedPaths.push(selected.sourcePath);
+              await saveTree();
+              show("Подтверждён исходный путь: "+selected.sourcePath+
+                " ("+(result.bytes||0)+" байт)");
+              await sleep(1500);
+            } else {
+              await saveTree();
+              throw new Error("Загрузка не подтверждена: "+selected.sourcePath+
+                " — "+String(result.reason||result.state).slice(0,120));
+            }
+          }
+        }
+        if(stopRequested)break;
+        item=await inFrame(frame.frameId,{kind:"RR_SENSOR_CRAWL_STEP"});
+        if(!item.ok)throw new Error((item.path||"")+" "+(item.error||"Не удалось вернуться по дереву"));
+        if(item.event==="complete"){
+          if(confirmed.size!==NESTED_PILOT_LIMIT ||
+            plan.files.some(x=>!confirmed.has(x.sourcePath)))
+            throw new Error("Получены не все два тестовых файла; загружать остальное рано");
+          tree.nestedPilot={
+            passed:true,status:"passed",files:plan.files.map(x=>x.sourcePath),
+            sameBasename:plan.sameBasename,confirmedAt:new Date().toISOString()
+          };
+          await saveTree();
+          notice="Два файла из разных вложенных папок сохранены по ожидаемым путям. "+
+            (plan.sameBasename?"Совпадающие имена проверены. ":"")+
+            "Просмотрщик вернулся в корень. Полная очередь доступна.";
+          show(notice);
+          return;
+        }
+      }
+      throw new Error(stopRequested?
+        "Приёмка остановлена пользователем. Проверенные файлы сохранены.":
+        "Не удалось завершить возврат к корню после двух файлов");
+    }catch(error){
+      tree.nestedPilot={...tree.nestedPilot,passed:false,status:"needs-review",
+        error:String(error.message||error).slice(0,220)};
+      await saveTree();
+      notice="Вложенная приёмка остановлена: "+error.message+
+        ". Прежде чем повторять — проверь статусы и вернись в корень.";
+      show(notice);
+    }finally{
+      running=false;stopRequested=false;treePhase="";treeFrame=null;
+      nestedPilotPlan=null;progress="";
+      await countDownloads();render();
+    }
+  }
+
   async function recoverTree(){
     if(running || !approved || !tree || !tree.scanned || !tree.complete ||
       tree.nestedPilot?.passed!==true)return;
