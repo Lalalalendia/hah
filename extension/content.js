@@ -205,87 +205,107 @@
     finally {running=false;render();}
   }
 
+  const START_WAIT_MS=8*60*1000;
+  const COMPLETE_WAIT_MS=30*60*1000;
   function clearPending(outcome) {
-    if (!pending) return;
-    const task=pending;pending=null;
+    if(!pending)return;
+    const task=pending;
+    pending=null;
     clearTimeout(task.timer);
+    clearInterval(task.pollTimer);
     task.resolve(outcome);
   }
-
+  function markDownloadStarted(token) {
+    if(!pending || pending.token!==token || pending.started)return;
+    pending.started=true;
+    clearTimeout(pending.timer);
+    pending.timer=setTimeout(()=>{
+      if(pending?.token===token)clearPending({
+        state:"needs-review",started:true,
+        reason:"The browser has not completed the transfer after 30 minutes; will NOT click again."
+      });
+    },COMPLETE_WAIT_MS);
+    show("Загрузка зарегистрирована браузером. Жду фактического завершения — повторных запросов не будет.");
+  }
+  function createPending(token,key) {
+    if(pending)throw new Error("Previous transfer has not been resolved");
+    let finish;
+    const waiting=new Promise(resolve=>{finish=resolve;});
+    const task={token,key,started:false,resolve:finish,timer:null,pollTimer:null};
+    pending=task;
+    task.timer=setTimeout(()=>{
+      if(pending?.token===token)clearPending({
+        state:"needs-review",started:false,
+        reason:"Yandex response delay exceeded 8 minutes; outcome unknown, no automatic retry."
+      });
+    },START_WAIT_MS);
+    task.pollTimer=setInterval(()=>{
+      if(!pending || pending.token!==token)return;
+      void send({kind:"RR_CHECK_ATTEMPT",token,key}).then(result=>{
+        if(!pending || pending.token!==token)return;
+        if(result.browserState==="in_progress")markDownloadStarted(token);
+        if(result.state==="downloaded" || result.state==="needs-review") {
+          clearPending({state:result.state,reason:result.reason,
+            bytes:result.bytes,started:task.started});
+        }
+      }).catch(()=>{/* Keep waiting. An unavailable service worker is not proof of failure. */});
+    },6000);
+    return waiting;
+  }
   async function downloadOnce(frameId,name,pilotMode,approvedMode,subfolder=folder) {
     const token=String(Date.now())+"-"+Math.random().toString(36).slice(2);
-    let done;
-    const wait = new Promise(resolve=>{done=resolve;});
-    pending={token,started:false,resolve:done,timer:null};
-    const armTimer=()=> {
-      if (!pending || pending.token!==token) return;
-      pending.timer=setTimeout(()=>clearPending({
-        state:"timeout",reason:"No browser download was reported"
-      }),25000);
-    };
-    armTimer();
-    let action;
+    const key=keyFor(name,subfolder);
+    const wait=createPending(token,key);
+    let armed=false,clicked=false,action=null;
     try {
-      await send({kind:"RR_ARM",token,key:keyFor(name,subfolder),folder:subfolder,filename:name});
+      await send({kind:"RR_ARM",token,key,folder:subfolder,filename:name});
+      armed=true;
       action=await inFrame(frameId,{
         kind:"RR_SENSOR_TRIGGER",name,pilot:pilotMode,
-        approvedMode:approvedMode?.mode || null,
-        approvedSlots:approvedMode?.slots ?? null
+        approvedMode:approvedMode?.mode||null,
+        approvedSlots:approvedMode?.slots??null
       });
-      lastAutoCommand={name:action.name,clicked:action.clicked,mode:action.mode,slots:action.slots,
-        userActivationAtClick:action.userActivationAtClick,syntheticClick:action.syntheticClick};
-      if (!action.clicked) throw new Error("Встроенная кнопка скачивания не нажата");
-      show("Команда скачивания отправлена: "+name+" ("+action.mode+", кнопок: "+action.slots+")");
+      lastAutoCommand={
+        name:action.name,clicked:action.clicked,mode:action.mode,slots:action.slots,
+        userActivationAtClick:action.userActivationAtClick,syntheticClick:action.syntheticClick
+      };
+      if(!action.clicked)throw new Error(action.error||"Встроенная кнопка скачивания не нажата");
+      clicked=true;
+      await send({kind:"RR_CLICK_SENT",token});
+      show("Запрошен "+name+" один раз. Яндекс может отвечать несколько минут; новые клики заблокированы.");
     } catch(error) {
-      clearPending({state:"failed",reason:error.message});
-      await send({kind:"RR_RELEASE",token}).catch(()=>{});
-      return {state:"failed",reason:error.message};
+      if(armed) {
+        if(clicked)await send({kind:"RR_MARK_UNKNOWN",token}).catch(()=>{});
+        else await send({kind:"RR_RELEASE",token}).catch(()=>{});
+      }
+      clearPending({state:clicked?"needs-review":"failed",reason:String(error.message||error),
+        started:false});
+      return {state:clicked?"needs-review":"failed",reason:String(error.message||error),
+        mode:action?.mode,slots:action?.slots,started:false};
     }
     const result=await wait;
-    if (result.state==="timeout") await send({kind:"RR_RELEASE",token}).catch(()=>{});
+    if(result.state!=="downloaded") {
+      // Keep background watcher alive: a late Yandex response may still arrive.
+      await send({kind:"RR_MARK_UNKNOWN",token}).catch(()=>{});
+    }
     await countDownloads();
     render();
-    return { ...result, mode:action.mode, slots:action.slots };
+    return {...result,mode:action.mode,slots:action.slots};
   }
 
-  async function retryDownload(frameId,name,pilotMode,approvedMode,maxRetries,subfolder=folder) {
-    for (let attempt=1;attempt<=maxRetries&&!stopRequested;attempt++) {
-      progress = name + " · попытка " + attempt + "/" + maxRetries;render();
-      const result=await downloadOnce(frameId,name,pilotMode,approvedMode,subfolder);
-      if (result.state==="downloaded") return result;
-      show(name+": "+result.state+" · "+(result.reason || ""));
-      // The Yandex viewer may trigger a download that escaped our onCreated
-      // correlation. Before retrying, check browser history for the SAME
-      // filename and recovery directory. Otherwise duplicate writes are likely.
+  async function retryDownload(frameId,name,pilotMode,approvedMode,_maxRetries,subfolder=folder) {
+    // NO blind retries. A timed-out Yandex request often downloads minutes
+    // later, which caused README (2).TXT through README (6).TXT.
+    // Distinguish a confirmed transfer error from an unknown outcome.
+    const result=await downloadOnce(frameId,name,pilotMode,approvedMode,subfolder);
+    if(result.state!=="downloaded") {
+      show(name+": "+result.state+" — повторное скачивание запрещено без подтверждения состояния.");
       try {
         const recent=await send({kind:"RR_INSPECT_DOWNLOADS",filename:name,folder:subfolder});
-        lastInspection=recent.matches || [];
-        const active=lastInspection.find(x=>x.ageSeconds<90 && x.state==="in_progress");
-        if(active) {
-          return {state:"timeout",started:true,reason:"Browser download is still active; retries suspended"};
-        }
-        const complete=lastInspection.find(x=>
-          x.ageSeconds<90 && x.state==="complete" && x.bytes>0 &&
-          x.savedToRecovery && x.exists!==false);
-        if(complete && result.mode && Number.isFinite(result.slots)) {
-          const ledger=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY] || {};
-          ledger[keyFor(name,subfolder)]={
-            state:"downloaded",bytes:complete.bytes,time:new Date().toISOString(),
-            method:"recent-browser-reconciliation",downloadId:complete.id
-          };
-          await chrome.storage.local.set({[LEDGER_KEY]:ledger});
-          await countDownloads();
-          show("Подтверждено по истории браузера: "+name+" ("+complete.bytes+" байт)");
-          return {...result,state:"downloaded",bytes:complete.bytes};
-        }
-      } catch(error) {show("Не удалось проверить историю: "+error.message);}
-      // If browser started a transfer but it never completed, do not start
-      // another copy; let the user inspect/stop the stalled browser transfer.
-      if (result.state==="timeout" && result.started) return result;
-      if (/BLOCKED|DANGEROUS|USER_CANCELED|DENIED|permission/i.test(result.reason || "")) return result;
-      if (attempt<maxRetries) await sleep(Math.min(20000,2000*Math.pow(2,attempt)));
+        lastInspection=recent.matches||[];
+      }catch(_){}
     }
-    return {state:"failed",reason:"retry limit"};
+    return result;
   }
 
   async function pilot() {
