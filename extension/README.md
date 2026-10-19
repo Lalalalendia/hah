@@ -1,69 +1,132 @@
-# Yandex RAR Rescue v0.4 — recovery of files inside a RAR on Yandex Disk
+# Yandex RAR Rescue v0.5 — восстановление дерева архивных файлов
 
-**Status: experimental.** The user has confirmed that at least one file (`README.TXT`) downloaded from the browser viewer. The extension's download ledger still needs a real-browser acceptance check.
+**Назначение:** получить файлы из публичного `Диск 2.rar` через просмотрщик
+Яндекс Диска, когда исходный RAR целиком возвращает HTTP 500, и сохранить
+исходную иерархию каталогов.
 
-## Target
-- Public file: https://disk.yandex.ru/d/_RSlWomRWmty1w
-- `Диск 2.rar`: 244,374,677 bytes (about 233 MiB).
-- 1,286 objects **including directories**.
-- Original archive SHA-256:
+**Состояние: экспериментальный Draft.**
+Реальное скачивание одного `README.TXT` пользователь уже подтвердил,
+но **полный рекурсивный обход и сохранение 1286 объектов на живом Яндекс Диске
+ещё не проверены**. Никаких гарантий восстановления всех файлов нет.
+
+## Источник
+
+- Публичная ссылка: https://disk.yandex.ru/d/_RSlWomRWmty1w
+- Исходный RAR: 244 374 677 байт.
+- В веб-интерфейсе указано 1286 объектов **вместе с папками**.
+- SHA-256 оригинального RAR:
   `2f980815b8267d1ab6cf5c8f1cf867542fa60b9469a3d0c6c4d15c217c577ad5`.
-- Whole-file GET, HEAD and HTTP Range all returned HTTP 500 on Windows and GitHub Actions.
-- Native browser viewer can list the tree, and `README.TXT` is confirmed obtainable.
+- Оригинальный файл не скачивается: HTTP 500 с Windows и GitHub Actions.
+- Отдельные файлы внутри архива иногда доступны.
 
-## Install / update
-1. Download the **rar-rescue-v04** artifact from the most recent successful GitHub Actions workflow **RAR Rescue Extension Checks**, and unzip it once.
-2. In Yandex Browser open `browser://extensions` and enable developer mode.
-3. Disable v0.3 or use **Reload** on the current unpacked extension after replacing its files.
-4. Load the unpacked directory containing `manifest.json`.
-5. Reload the Yandex Disk archive preview. Grant only requested site access to `disk.yandex.ru`, `docviewer.yandex.ru`, and `docviewer.360.yandex.ru`.
-6. Click the extension toolbar icon. The heading should read **RAR Rescue v0.4**.
+## Как установить
 
-## First step — reconcile the README that has already downloaded
-1. Open the root of the archive, keeping the relative folder field **empty**.
-2. Click **1. Найти файлы**.
-3. Click **2. Учесть скачанный README**. This checks recent Chrome/Yandex Browser download history for the same filename; it **does not download it again**.
-4. The panel distinguishes:
-   - completed nonzero file **inside** `Downloads/YandexRARRecovery/Disk-2.rar/` — counted in the local ledger, permits the next stage;
-   - completed file elsewhere — download succeeded but extension could not prove destination; the queue remains locked;
-   - still active or failed — do not start overlapping downloads;
-   - no matching recent download — need to perform the new one-file pilot.
-5. If necessary click **3. Проверить новую загрузку**. This uses the real viewer's row-level download action for `README.TXT`, *not* the broken original-RAR button in the header.
-6. **4. Скачать текущую папку** becomes available only after a browser-confirmed pilot and a recognized download button layout.
+1. Открыть последний успешный запуск workflow **RAR Rescue Extension Checks**.
+2. Скачать артефакт `rar-rescue-v05` и распаковать **один раз**.
+3. В Яндекс Браузере открыть `browser://extensions`, включить режим
+   разработчика, отключить старые версии RAR Rescue.
+4. Через «Загрузить распакованное расширение» выбрать папку с `manifest.json`.
+5. Разрешить доступ к `disk.yandex.ru`, `docviewer.yandex.ru` и
+   `docviewer.360.yandex.ru`, затем обновить страницу Диска.
+6. **Открыть корень** `Диск 2.rar`: должны быть видны `README.TXT`, `HELP`,
+   `JRE`, `INDEX.HTM` и другие объекты корня. Открыть панель расширения.
 
-Before starting the queue, visually check the counts of files, folders and unknown rows. If seven folders appear as files or the displayed counts look wrong, **do not run the queue**. Copy diagnostic JSON using the panel and return it for the next selector correction.
+## Что нажимать (структурное восстановление)
 
-## DOM rules and bug fixed from v0.3
-From the user's real DevTools screenshots:
-- each member row has a `title` and `resourceItem_*` CSS class;
-- row actions appear inside `actionBar_*`;
-- actual file icons use `file-icon` variants;
-- folders may also reuse `file-icon`, so the generic class **does not prove that a member is a file**.
+1. **1. Найти файлы** — проверка, что расширение видит правильный `docviewer` кадр.
+2. **4. Обойти все папки** — первый и обязательный этап. Он ещё ничего не скачивает;
+   расширение собирает манифест из *каждой* папки, включая пустые, с проверкой
+   переходов в родительский каталог. Не переключай папки во время обхода.
+3. В итоге нужна карта на **1286 объектов**, без неизвестных элементов, дубликатов
+   и ошибок переходов. Если цифры не сходятся, автоматическая массовая загрузка
+   **остаётся заблокированной**. Нажми **Отчёт JSON** и пришли результаты диагностики.
+4. После успешной карты используй **2. Учесть скачанный README** (если он уже
+   находится внутри `Downloads/YandexRARRecovery/Disk-2.rar/`) либо
+   **3. Проверить новую загрузку**. Вторая кнопка пробует самостоятельно скачать
+   `README.TXT` и ждёт подтверждения от менеджера загрузок браузера.
+5. После подтверждения пилота нажми **5. Скачать всё со структурой**.
+   Расширение ещё раз проходит дерево и проверяет, что каждая папка соответствует
+   построенному манифесту. Из каждого файла получается запись в журнале.
+   Повторные попытки ограничены (до трёх) и идут последовательно.
+6. После завершения сохрани **Отчёт JSON**. Если в исходном RAR есть пустые папки,
+   нажми **Создать пустые каталоги** и выбери через диалог браузера именно
+   `Downloads/YandexRARRecovery/Disk-2.rar`. Это дополнительный шаг, потому что
+   API скачивания браузера не создаёт пустые папки без файлов. Если диалог
+   не поддерживается, пути пустых папок останутся в JSON-отчёте.
 
-v0.4 considers folder-specific icon class tokens first, then explicit file-type tokens, and marks unrecognized rows as `unknown`. Unknown objects and folders are **never clicked as files**. The diagnostics include up to 16 visible item names, inferred types and icon class tokens to allow precise further corrections without DevTools.
+## Где лежат файлы
 
-## Technical architecture
-- `archive-dom.js`: `title/resourceItem/actionBar` selectors and conservative file/folder classification.
-- `frame-sensor.js`: runs in allowed docviewer frames; enumerates rows, returns a bounded classification report and triggers row-level action.
-- `background.js`: cross-frame communication, browser download observation, optional user-requested inspection of **only filename-matching recent downloads**, and guarded output paths. No tokens, headers, cookies, network interception or uploads.
-- `content.js`: UI, first-file probe, guarded queue, local ledger and safe retries.
-- `extension/tests/dom-smoke.cjs`: generic file-icon on folders, DICOMDIR, unknown-row classification, button selection.
-- `extension/tests/download-history.cjs`: recent download reconciliation, target path matching, no unrelated file names or signed download links in report.
-- `tools/test_archive_fixture.py`: Chrome fixture matching visible screenshot structure, ensuring file buttons are clicked and header/folders are not.
-- `.github/workflows/extension-check.yml`: CI gate and unpacked extension artifact.
+```text
+Downloads/
+  YandexRARRecovery/
+    Disk-2.rar/
+      README.TXT
+      INDEX.HTM
+      HELP/
+        ...
+      IHE_PDI/
+        ...
+      JRE/
+        ...
+      ...
+```
 
-## Limitations / safeguards
-- No automatic traversal of all nested folders yet. Current queue handles **only the folder currently open**.
-- Keep the viewer in the current folder during a batch. Do not navigate away until the queue stops.
-- Browser `complete` + nonzero bytes is a transport outcome, **not** CRC, SHA or correct internal content verification. Compare against archive member checksums if obtainable.
-- If the viewer does not expose a file through a real download endpoint, repeating requests indefinitely will not restore it.
-- Recovered EXE, CMD and other executables should be treated as untrusted files and **not run**.
-- Never upload browser account HTML, signed download URLs, cookies or OAuth tokens to GitHub.
-- Missing files should be recorded explicitly; a reconstructed archive is a separate object whose SHA-256 will differ from the original RAR.
+**Пути берутся из состояния рекурсивного обхода, а не из поля, введённого вручную.**
+Скрипты, EXE/CMD/SH и другие исполняемые файлы скачиваются как данные, но
+никогда не запускаются расширением.
 
-## Future stages
-1. Validate correct browser download bookkeeping from the real Yandex viewer.
-2. Fully enumerate and classify all 1,286 objects, including unknown rows.
-3. Build recursive traversal of directories, backoff, progress ledger and resume after restart.
-4. Fetch original member CRC/size metadata where available; verify each recovered member and export unresolved failures.
-5. Optionally pack a new archive with a recovery manifest; never mark an incomplete recovery as complete.
+## Правила целостности
+
+- Манифест содержит исходный относительный путь, рассчитанное безопасное имя
+  в Windows, состояние загрузки, количество попыток, байты и ошибки.
+- Процесс не объявляет полный архив восстановленным, если дерево не сошлось с
+  числом 1286 либо если встретился неопределённый объект.
+- При переименовании небезопасных для Windows имён используются защитные
+  нормализации; обнаруженные конфликты имён блокируют массовый этап.
+- Старые успешные загрузки учитываются по локальному журналу; браузерная
+  операция записывает файл по относительному пути с политикой
+  `conflictAction: "uniquify"`, **не `overwrite`**. Если имя занятo, это
+  требует проверки, а не молчаливого перезаписывания.
+- Отчёт имеет три существенных состояния: `downloaded`, `failed`,
+  `needs-review` (включая незавершённые операции). Возможны и `pending`
+  файлы, если работу остановили.
+- Факт `downloaded` означает только браузерное завершение и путь вывода.
+  Он **не подтверждает CRC32 или SHA-256 содержимого отдельного файла**.
+- SHA-256 исходного RAR не подходит для проверки заново собранного ZIP или
+  каталога. Нужны оригинальные размеры/CRC отдельных элементов, если
+  просмотрщик предоставляет их.
+- Если Яндекс не отдаёт часть файлов, этот инструмент не восстановит их
+  магически. Такие объекты остаются в отчёте.
+
+## При остановке и повторном запуске
+
+- Прогресс загрузки и манифест сохраняются локально через
+  `chrome.storage.local`; в GitHub не отправляются.
+- Не закрывай вкладку и не меняй открытую папку в середине одного прохода.
+- Если процесс остановился во вложенной папке, **сначала вернись в корень**
+  RAR, затем вновь запускай обход. Завершённые файлы в журнале должны
+  пропускаться при следующем восстановлении.
+- Сохрани JSON-отчёт перед переустановкой/удалением расширения:
+  удаление расширения может удалить его локальное хранилище.
+
+## Архитектура и проверки
+
+- `archive-dom.js` — обнаружение строк по `title`, распознавание папок,
+  безопасный поиск локальной кнопки скачивания.
+- `archive-crawler.js` — итеративный обход дерева, ограничение глубины,
+  проверка переходов и возвращения к исходной папке, защита от циклов,
+  сбор списка с прокруткой.
+- `frame-sensor.js` — выполнение внутри `docviewer` iframe.
+- `background.js` — межкадровые команды, скачивания в нужную папку,
+  браузерные уведомления и журнал; не читает OAuth/cookies.
+- `content.js` — интерфейс, манифест, проход загрузки, пауза, отчёт JSON,
+  опциональное создание пустых каталогов с явным разрешением пользователя.
+- `tools/test_archive_fixture.py` — тест локальной кнопки файла в Chrome.
+- `tools/test_recursive_fixture.py` — тест вложенных папок и возвращения к
+  родителю в настоящем Chrome на синтетическом HTML.
+- `extension/tests/download-history.cjs` — тест путей, блокировки перезаписи
+  и приватности журнала.
+- Workflow `RAR Rescue Extension Checks` — CI с установочным артефактом.
+
+**Ни файлы RAR, ни локальный манифест, ни авторизованный HTML не загружаются
+в GitHub.** Все испытания в CI используют синтетические данные.
