@@ -1,110 +1,158 @@
 const assert=require("node:assert/strict");
 const fs=require("node:fs");
-const path=require("node:path");
 const vm=require("node:vm");
+const path=require("node:path");
 const root=path.resolve(__dirname,"..");
-let handler;
-let filenameHandler;
-const registrations=()=>({addListener(fn){handler=fn;}});
-const recentTime=new Date(Date.now()-60*1000).toISOString();
-const downloads=[
-  {
-    id:11,tabId:10,url:"https://2.downloader.disk.yandex.ru/disk/signed?secret=DO_NOT_LEAK",
-    filename:"C:\\Users\\User\\Downloads\\YandexRARRecovery\\Disk-2.rar\\README.TXT",
-    state:"complete",bytesReceived:384,totalBytes:384,exists:true,startTime:recentTime
-  },
-  {
-    id:12,tabId:-1,url:"https://2.downloader.disk.yandex.ru/disk/other?secret=DO_NOT_LEAK",
-    filename:"C:\\Users\\User\\Downloads\\README.TXT",
-    state:"complete",bytesReceived:20,totalBytes:20,exists:true,startTime:recentTime
-  },
-  {
-    id:13,tabId:10,url:"https://example.org/private?password=PRIVATE",
-    filename:"C:\\Users\\User\\Downloads\\PrivateSecret.csv",
-    state:"complete",bytesReceived:10,totalBytes:10,exists:true,startTime:recentTime
-  }
-];
-const chrome={
-  storage:{
-    session:{async get(){return {};},async set(){}},
-    local:{async get(){return {};},async set(){}}
-  },
-  runtime:{onMessage:{addListener(fn){handler=fn;}}},
+const session={},local={},notifications=[],downloads=[];
+let messageHandler,createdHandler,changedHandler,filenameHandler;
+const hooks={
+  runtime:{onMessage:{addListener(fn){messageHandler=fn;}}},
   action:{onClicked:{addListener(){}}},
-  tabs:{sendMessage:async()=>({ok:true}),onRemoved:{addListener(){}}},
+  tabs:{sendMessage:async(tabId,msg)=>{notifications.push({tabId,msg});return {ok:true};},
+    onRemoved:{addListener(){}}},
+  storage:{
+    session:{async get(key){return {[key]:session[key]};},async set(obj){Object.assign(session,obj);}},
+    local:{async get(key){return {[key]:local[key]};},async set(obj){Object.assign(local,obj);}}
+  },
   downloads:{
-    search:async()=>downloads,
-    onCreated:{addListener(){}},
-    onChanged:{addListener(){}},
+    async search(query){
+      if(query && Number.isInteger(query.id))return downloads.filter(x=>x.id===query.id);
+      return downloads.slice().sort((a,b)=>
+        Date.parse(b.startTime||"")-Date.parse(a.startTime||""));
+    },
+    onCreated:{addListener(fn){createdHandler=fn;}},
+    onChanged:{addListener(fn){changedHandler=fn;}},
     onDeterminingFilename:{addListener(fn){filenameHandler=fn;}}
   }
 };
-const scope={chrome,URL,setTimeout,clearTimeout};
+const scope={chrome:hooks,URL,Date,setTimeout,clearTimeout};
 scope.globalThis=scope;
-vm.runInNewContext(fs.readFileSync(path.join(root,"common.js"),"utf8"),scope);
-const bg=fs.readFileSync(path.join(root,"background.js"),"utf8")
-  .replace('importScripts("common.js");','');
-vm.runInNewContext(bg,scope);
-assert.equal(typeof handler,"function");
-function dispatch(message) {
-  const sender={tab:{id:10,url:"https://disk.yandex.ru/d/test"},url:"https://disk.yandex.ru/d/test",frameId:0};
+vm.createContext(scope);
+vm.runInContext(fs.readFileSync(path.join(root,"common.js"),"utf8"),scope);
+vm.runInContext(fs.readFileSync(path.join(root,"background.js"),"utf8")
+  .replace('importScripts("common.js");',''),scope);
+assert(messageHandler && createdHandler && changedHandler && filenameHandler);
+const sender={tab:{id:10,url:"https://disk.yandex.ru/d/_RSlWomRWmty1w"},
+  url:"https://disk.yandex.ru/d/_RSlWomRWmty1w",frameId:0};
+function dispatch(message){
   return new Promise((resolve,reject)=>{
-    const didWait=handler(message,sender,result=>resolve(result));
-    if(!didWait)reject(new Error("Expected asynchronous message handler"));
-    setTimeout(()=>reject(new Error("Timed out")),1500).unref();
+    const handled=messageHandler(message,sender,result=>resolve(result));
+    if(!handled)reject(new Error("Missing async message response"));
+    setTimeout(()=>reject(new Error("Background request timeout")),2500).unref();
+  });
+}
+const tick=()=>new Promise(resolve=>setTimeout(resolve,20));
+function downloadedItem(id,name,target,tab=77,url="https://docviewer.yandex.ru/download?secret=DO_NOT_LEAK"){
+  return {
+    id,tabId:tab,url,filename:target,
+    state:"in_progress",bytesReceived:0,totalBytes:2229,exists:true,
+    startTime:new Date().toISOString(),
+    initialName:name
+  };
+}
+async function rename(item){
+  return new Promise(resolve=>{
+    const handled=filenameHandler(item,resolve);
+    assert(handled===true);
   });
 }
 (async()=>{
-  const x=await dispatch({kind:"RR_INSPECT_DOWNLOADS",filename:"README.TXT",folder:""});
-  assert(x.ok,JSON.stringify(x));
-  assert.equal(x.matches.length,2);
-  assert.equal(x.matches[0].savedToRecovery,true);
-  assert.equal(x.matches[0].exists,true);
-  assert.equal(x.matches[1].savedToRecovery,false);
-  assert(!JSON.stringify(x).includes("DO_NOT_LEAK"));
-  assert(!JSON.stringify(x).includes("PRIVATE"));
-  assert(!JSON.stringify(x).includes("PrivateSecret"));
-  assert(!JSON.stringify(x).includes("C:"));
-  const y=await dispatch({kind:"RR_INSPECT_DOWNLOADS",filename:"README.TXT",folder:"HELP"});
-  assert(y.ok);
-  assert(y.matches.every(v=>v.savedToRecovery===false));
-  const arm=await dispatch({
-    kind:"RR_ARM",token:"nested-test",key:"Disk-2.rar/HELP/SUB/NESTED.JSON",
-    folder:"HELP/SUB",filename:"NESTED.JSON"
-  });
+  const recent=downloadedItem(50,"README.TXT",
+    "C:\\Users\\User\\Downloads\\README.TXT",77);
+  recent.state="complete";recent.bytesReceived=2229;
+  const hidden=downloadedItem(51,"secret.txt",
+    "C:\\Users\\User\\Downloads\\secret.txt",10,"https://evil.example.com/?private=1");
+  hidden.state="complete";hidden.bytesReceived=999;
+  downloads.push(recent,hidden);
+  const inspect=await dispatch({kind:"RR_INSPECT_DOWNLOADS",
+    filename:"README.TXT",folder:""});
+  assert(inspect.ok && inspect.matches.length===1);
+  assert.equal(inspect.matches[0].savedToRecovery,false);
+  assert(!JSON.stringify(inspect).includes("DO_NOT_LEAK"));
+  assert(!JSON.stringify(inspect).includes("secret.txt"));
+  assert(!JSON.stringify(inspect).includes("C:\\"));
+  downloads.length=0;
+
+  const key="Disk-2.rar/README.TXT";
+  const arm=await dispatch({kind:"RR_ARM",token:"attempt-1",key,folder:"",
+    filename:"README.TXT"});
   assert(arm.ok,JSON.stringify(arm));
-  const suggestion=await new Promise((resolve,reject)=>{
-    const handled=filenameHandler({
-      id:998,tabId:10,
-      url:"https://downloader.disk.yandex.ru/disk/item?token=DO_NOT_LEAK"
-    },resolve);
-    assert.equal(handled,true);
-    setTimeout(()=>reject(new Error("No filename suggestion")),1500).unref();
-  });
-  assert.equal(suggestion.filename,
+  assert.equal(local.rr_ledger[key].state,"armed");
+  const click=await dispatch({kind:"RR_CLICK_SENT",token:"attempt-1"});
+  assert(click.ok);
+  assert.equal(local.rr_ledger[key].state,"awaiting");
+  const double=await dispatch({kind:"RR_ARM",token:"attempt-2",key,folder:"",
+    filename:"README.TXT"});
+  assert(!double.ok && /already downloaded|unresolved/i.test(double.error),double);
+  // Delayed after 2 min. Old v0.5 code would have abandoned the watcher
+  // after 25s and started another README (2).TXT request.
+  vm.runInContext('watchers["10"].started=Date.now()-120000',scope);
+  const late=downloadedItem(100,"README (6).TXT","README (6).TXT");
+  downloads.push(late);
+  createdHandler(late);
+  await tick();
+  assert.equal(session.rr_pending["10"].downloadId,100);
+  const suggested=await rename(late);
+  assert.equal(suggested.filename,"YandexRARRecovery/Disk-2.rar/README.TXT");
+  assert.equal(suggested.conflictAction,"uniquify");
+  late.filename="C:\\Users\\User\\Downloads\\"+
+    "YandexRARRecovery\\Disk-2.rar\\README.TXT";
+  late.state="complete";late.bytesReceived=2229;
+  changedHandler({id:100,state:{current:"complete"}});
+  await tick();
+  assert.equal(local.rr_ledger[key].state,"downloaded");
+  assert.equal(local.rr_ledger[key].bytes,2229);
+  assert.equal(Object.keys(session.rr_pending).length,0);
+  assert(notifications.some(n=>n.msg.kind==="RR_RESULT"&&n.msg.state==="downloaded"));
+  const blockDone=await dispatch({kind:"RR_ARM",token:"attempt-3",key,folder:"",
+    filename:"README.TXT"});
+  assert(!blockDone.ok);
+  // Unknown result must NOT automatically release or re-click.
+  const nestedKey="Disk-2.rar/HELP/SUB/NESTED.JSON";
+  const nested=await dispatch({kind:"RR_ARM",token:"attempt-nested",key:nestedKey,
+    folder:"HELP/SUB",filename:"NESTED.JSON"});
+  assert(nested.ok);
+  await dispatch({kind:"RR_CLICK_SENT",token:"attempt-nested"});
+  await dispatch({kind:"RR_MARK_UNKNOWN",token:"attempt-nested"});
+  assert.equal(local.rr_ledger[nestedKey].state,"needs-review");
+  const unrelated=await dispatch({kind:"RR_ARM",token:"other",key:"Disk-2.rar/OTHER.DAT",
+    folder:"",filename:"OTHER.DAT"});
+  assert(!unrelated.ok);
+  // Even if the panel calls RELEASE after timeout, a confirmed click cannot
+  // be forgotten; late downloads remain eligible for recovery.
+  await dispatch({kind:"RR_RELEASE",token:"attempt-nested"});
+  assert(session.rr_pending["10"]);
+  vm.runInContext('watchers["10"].started=Date.now()-540000',scope);
+  const delayed=downloadedItem(101,"NESTED.JSON","NESTED.JSON",99,
+    "https://2.downloader.disk.yandex.ru/api/download");
+  downloads.push(delayed);
+  createdHandler(delayed);
+  await tick();
+  assert.equal(session.rr_pending["10"].downloadId,101);
+  const newPath=await rename(delayed);
+  assert.equal(newPath.filename,
     "YandexRARRecovery/Disk-2.rar/HELP/SUB/NESTED.JSON");
-  assert.equal(suggestion.conflictAction,"uniquify");
-  assert(!JSON.stringify(suggestion).includes("DO_NOT_LEAK"));
-  const release=await dispatch({kind:"RR_RELEASE",token:"nested-test"});
-  assert(release.ok);
-  const cross=await dispatch({
-    kind:"RR_ARM",token:"cross-tab-test",key:"Disk-2.rar/README.TXT",
-    folder:"",filename:"README.TXT"
-  });
-  assert(cross.ok);
-  const mismatched=await new Promise(resolve=>{
-    filenameHandler({id:1002,tabId:88,
-      filename:"OTHER.TXT",
-      url:"https://docviewer.yandex.ru/download"},resolve);
-  });
-  assert.equal(mismatched,undefined);
-  const foreignTab=await new Promise(resolve=>{
-    filenameHandler({id:1003,tabId:88,
-      filename:"README.TXT",url:"https://docviewer.yandex.ru/download"},resolve);
-  });
-  assert.equal(foreignTab.filename,"YandexRARRecovery/Disk-2.rar/README.TXT");
-  assert.equal(foreignTab.conflictAction,"uniquify");
-  const released=await dispatch({kind:"RR_RELEASE",token:"cross-tab-test"});
-  assert(released.ok);
-  console.log("OK: nested paths, foreign-tab docviewer correlation, disjoint filenames, and no signed URLs");
-})().catch(e=>{console.error(e);process.exitCode=1;});
+  delayed.filename="C:\\Users\\User\\Downloads\\"+
+    "YandexRARRecovery\\Disk-2.rar\\HELP\\SUB\\NESTED.JSON";
+  delayed.state="complete";delayed.bytesReceived=44;delayed.totalBytes=44;
+  changedHandler({id:101,state:{current:"complete"}});
+  await tick();
+  assert.equal(local.rr_ledger[nestedKey].state,"downloaded");
+  // A browser completion outside expected path must NOT count as a good
+  // recovered file and must never be automatically retried.
+  const unsafeKey="Disk-2.rar/HELP/FAIL.TXT";
+  assert((await dispatch({kind:"RR_ARM",token:"path-test",key:unsafeKey,
+    folder:"HELP",filename:"FAIL.TXT"})).ok);
+  await dispatch({kind:"RR_CLICK_SENT",token:"path-test"});
+  const wrong=downloadedItem(102,"FAIL.TXT","FAIL.TXT",10);
+  downloads.push(wrong);
+  createdHandler(wrong);await tick();
+  wrong.filename="C:\\Users\\User\\Downloads\\FAIL (2).TXT";
+  wrong.state="complete";wrong.bytesReceived=24;wrong.totalBytes=24;
+  changedHandler({id:102,state:{current:"complete"}});
+  await tick();
+  assert.equal(local.rr_ledger[unsafeKey].state,"needs-review");
+  assert(!(await dispatch({kind:"RR_ARM",token:"retry-block",key:unsafeKey,
+    folder:"HELP",filename:"FAIL.TXT"})).ok);
+  console.log("PASS: 2/9-minute delayed events, single click, persisted uncertainty, nested paths, path mismatch and no leaked signed URLs");
+})().catch(error=>{console.error(error);process.exitCode=1;});
