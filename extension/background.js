@@ -30,39 +30,94 @@ async function notify(tabId, payload) {
 function findByDownloadId(id) {
   return Object.values(watchers).find(w => w.downloadId === id);
 }
-function findActiveWatcher(item) {
-  if (!RarRescueUtils.isDownloadHost(item.url || item.finalUrl || "")) return null;
-  const now=Date.now();
-  const direct=watchers[String(item.tabId)];
-  if (direct && direct.downloadId == null && now-direct.started < 90000) return direct;
-  // A file downloaded from an embedded Yandex viewer can have a different
-  // tabId from the parent Disk page. Correlate only a SINGLE fresh armed
-  // watcher AND a filename match; never claim arbitrary browser downloads.
-  const candidates=Object.values(watchers).filter(w=>
-    w.downloadId == null && now-w.started < 60000);
-  if(candidates.length!==1)return null;
-  const record=candidates[0];
-  const basename=String(item.filename || "").replace(/\\/g,"/").split("/").pop().toLowerCase();
-  if(!basename) return item.tabId === -1 ? record : null;
-  return basename === String(record.filename || "").toLowerCase() ? record : null;
+
+const PENDING_WINDOW_MS = 15 * 60 * 1000;
+function sameExpectedFile(filename, expected) {
+  const base=String(filename || "").replace(/\\/g,"/").split("/").pop().toLowerCase();
+  const name=String(expected || "").toLowerCase();
+  if (!base || !name) return false;
+  if (base === name) return true;
+  // Browsers may pre-uniquify Yandex's filename as README (6).TXT.
+  const dot=name.lastIndexOf(".");
+  const stem=dot<0?name:name.slice(0,dot);
+  const ext=dot<0?"":name.slice(dot);
+  if (!base.startsWith(stem+" (") || !base.endsWith(")"+ext)) return false;
+  const digits=base.slice((stem+" (").length,base.length-(")"+ext).length);
+  return /^[1-9][0-9]{0,3}$/.test(digits);
 }
-async function complete(record, status, reason, item) {
-  if (watchers[String(record.tabId)] !== record) return;
-  const ledger = (await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY] || {};
-  ledger[record.key] = {
-    state: status,
-    reason: String(reason || "").slice(0, 100),
-    bytes: Number(item && item.bytesReceived) || 0,
-    time: new Date().toISOString()
+function downloadEligible(item, record, now=Date.now()) {
+  if (!item || !record || !RarRescueUtils.isDownloadHost(item.url || item.finalUrl || "")) return false;
+  if (now-record.started > PENDING_WINDOW_MS || record.downloadId!=null && record.downloadId!==item.id) return false;
+  const base=String(item.filename||"").replace(/\\/g,"/").split("/").pop();
+  if (base) return sameExpectedFile(base,record.filename);
+  // Only the originating tab can be associated when Chrome hasn't yet
+  // supplied a name. Never guess for unrelated positive or detached tabs.
+  return item.tabId===record.tabId;
+}
+function findActiveWatcher(item) {
+  const records=Object.values(watchers).filter(w=>w && w.downloadId==null &&
+    Date.now()-w.started<PENDING_WINDOW_MS);
+  if(records.length!==1)return null;
+  return downloadEligible(item,records[0]) ? records[0] : null;
+}
+async function markReview(record,reason){
+  if(watchers[String(record.tabId)]!==record)return;
+  const ledger=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY] || {};
+  if(ledger[record.key]?.state==="downloaded")return;
+  ledger[record.key]={
+    state:"needs-review",reason:String(reason||"Unconfirmed delayed download").slice(0,160),
+    time:new Date().toISOString(),token:record.token,filename:record.filename,
+    target:record.target,started:record.started,downloadId:record.downloadId
   };
-  await chrome.storage.local.set({ [LEDGER_KEY]: ledger });
+  await chrome.storage.local.set({[LEDGER_KEY]:ledger});
+}
+async function complete(record,status,reason,item){
+  if(watchers[String(record.tabId)]!==record)return;
+  const ledger=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY] || {};
+  ledger[record.key]={
+    state:status,reason:String(reason||"").slice(0,160),
+    bytes:Number(item?.bytesReceived)||0,time:new Date().toISOString(),
+    downloadId:item?.id??record.downloadId,target:record.target
+  };
+  await chrome.storage.local.set({[LEDGER_KEY]:ledger});
   delete watchers[String(record.tabId)];
   await saveWatchers();
-  await notify(record.tabId, {
-    kind: "RR_RESULT", token: record.token, state: status,
-    reason: String(reason || "").slice(0, 100),
-    bytes: Number(item && item.bytesReceived) || 0
+  await notify(record.tabId,{
+    kind:"RR_RESULT",token:record.token,state:status,reason:ledger[record.key].reason,
+    bytes:ledger[record.key].bytes
   });
+}
+async function completeFromChrome(record,item) {
+  if(!item || item.state!=="complete" && item.state!=="interrupted")return false;
+  if(item.state==="interrupted"){
+    await complete(record,"needs-review",item.error||"Browser download interrupted",item);
+    return true;
+  }
+  const bytes=Number(item.bytesReceived)||0;
+  const total=Number(item.totalBytes)||0;
+  const path=String(item.filename||"").replace(/\\/g,"/");
+  const expected=String(record.target||"").toLowerCase();
+  const correct=path.toLowerCase().endsWith("/"+expected);
+  const valid=bytes>0 && (!total||bytes===total) && item.exists!==false && correct;
+  await complete(record,valid?"downloaded":"needs-review",
+    valid?"Completed, size nonzero; checksum not verified":
+      (!correct?"Download completed outside required directory":
+      (item.exists===false?"Downloaded file no longer exists":"Unverified downloaded bytes")),item);
+  return true;
+}
+async function latestAttemptItem(record) {
+  const rows=await chrome.downloads.search({limit:100,orderBy:["-startTime"]});
+  const candidates=rows.filter(item=>{
+    const started=Date.parse(item.startTime||"");
+    return Number.isFinite(started) && started>=record.started-10000 &&
+      downloadEligible(item,record);
+  });
+  candidates.sort((a,b)=>{
+    const exactA=String(a.filename||"").replace(/\\/g,"/").toLowerCase().endsWith("/"+record.target.toLowerCase())?1:0;
+    const exactB=String(b.filename||"").replace(/\\/g,"/").toLowerCase().endsWith("/"+record.target.toLowerCase())?1:0;
+    return exactB-exactA;
+  });
+  return candidates[0]||null;
 }
 
 chrome.action.onClicked.addListener(async tab => {
