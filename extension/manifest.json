@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Yandex RAR Rescue",
-  "version": "0.4.0",
-  "description": "Safely inventory RAR preview items, reconcile recent downloads and recover accessible files through Yandex viewer.",
+  "version": "0.5.0",
+  "description": "Recursive archive tree manifest and guarded recovery with original relative paths.",
   "permissions": [
     "downloads",
     "storage"
@@ -41,6 +41,7 @@
       ],
       "js": [
         "archive-dom.js",
+        "archive-crawler.js",
         "frame-sensor.js"
       ],
       "run_at": "document_idle",
