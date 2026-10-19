@@ -154,6 +154,11 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       const filename = String(message.filename || "");
       const folder = String(message.folder || "");
       if (!token || !key) throw new Error("Missing download identity");
+      const stale=watchers[String(tabId)];
+      if (stale && Date.now()-stale.started > 4*60*1000) {
+        delete watchers[String(tabId)];
+        await saveWatchers();
+      }
       if (watchers[String(tabId)]) throw new Error("A download is already pending");
       const target = RarRescueUtils.relative(folder, filename);
       watchers[String(tabId)] = {
