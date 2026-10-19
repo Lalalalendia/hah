@@ -1,149 +1,95 @@
-/* Read-only archive viewer sensor. Runs in every permitted frame.
- * Never reads cookies, storage, HTTP headers or download URLs.
- */
+/* Yandex RAR Rescue v0.3: archive row discovery and per-file action sensor.
+   Runs only in approved Yandex document frames. */
 (() => {
   "use strict";
-  const FILE_PATTERN = /^[^\u0000-\u001f\/\\]{1,120}\.(?:txt|htm|html|xml|exe|dll|cmd|bat|sh|json|xml|pdf|jpg|jpeg|png|gif|svg|ini|cfg|dat|bin|db|zip|rar|7z|jar|class|properties|js|css|py|java|sql|csv|xls|xlsx|doc|docx|ppt|pptx|md|log|chm|iso|img|dicom|dcm|pdi|idx|xsl|dtd|conf|so|lib|inf|ico|otf|ttf|mp3|mp4|avi|mov|webp|bmp|tif|tiff|lua|pl|rb|epub|rtf|odt|bak|enc)$/i;
-  const SPECIAL_FILES = new Set(["DICOMDIR", "README", "LICENSE", "Makefile"]);
-  const MAX_NODES = 18000;
-  let pickerActive = false;
-  let pickTimer;
-
-  const tell = (message) => {
-    try { chrome.runtime.sendMessage(message).catch(() => {}); }
-    catch (_) { /* Extension was reloaded. */ }
+  const dom = globalThis.RarRescueDOM;
+  const replyToPanel = payload => {
+    try { chrome.runtime.sendMessage(payload).catch(() => {}); } catch (_) {}
   };
-  function visible(el) {
-    if (!(el instanceof Element)) return false;
-    if (el.closest("#rr-recovery-panel,script,style,noscript,textarea,pre")) return false;
-    if (!el.getClientRects().length) return false;
-    const style = getComputedStyle(el);
-    return style.display !== "none" && style.visibility !== "hidden";
-  }
-  function entries() {
-    const found = [];
-    if (!document.body) return found;
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-    let current, steps = 0;
-    const seen = new Set();
-    while ((current = walker.nextNode()) && steps++ < MAX_NODES && found.length < 2500) {
-      const value = (current.textContent || "").trim();
-      if (!value || value.length > 125 || (!FILE_PATTERN.test(value) && !SPECIAL_FILES.has(value))) continue;
-      const el = current.parentElement;
-      if (!visible(el)) continue;
-      const key = value + "@" + (el.tagName || "") + "@" + found.length;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      found.push({ name: value, el });
-    }
-    return found;
-  }
-  function attrs(el) {
-    if (!el || !(el instanceof Element)) return {};
+  const current = () => dom.archiveRows(document);
+  const summarize = (requestId) => {
+    const rows = current();
+    const items = rows.map(row => dom.itemOf(row));
     return {
-      tag: el.tagName.toLowerCase(),
-      classes: Array.from(el.classList).slice(0, 4),
-      role: el.getAttribute("role"),
-      testid: el.getAttribute("data-testid")
-    };
-  }
-  function ancestry(el, limit = 7) {
-    const result = [];
-    for (let i = 0; el && i < limit; i++, el = el.parentElement) {
-      const d = attrs(el);
-      d.siblings = el.parentElement ? el.parentElement.children.length : 0;
-      const actions = Array.from(el.querySelectorAll("button,[role=button],[aria-label],[title]"))
-        .filter(a => a !== el && /скач|download|сохран|save/i.test(
-          (a.getAttribute("aria-label") || "") + " " + (a.getAttribute("title") || "") + " " + (a.innerText || "").slice(0, 40)
-        ))
-        .slice(0, 4);
-      d.actionLabels = actions.map(a => ({
-        tag: a.tagName.toLowerCase(),
-        title: String(a.getAttribute("title") || "").slice(0, 60),
-        aria: String(a.getAttribute("aria-label") || "").slice(0, 60)
-      }));
-      result.push(d);
-    }
-    return result;
-  }
-  function snapshot(requestId) {
-    const names = entries();
-    return {
-      kind: "RR_SENSOR_REPORT",
+      kind:"RR_SENSOR_REPORT",
       requestId,
-      host: location.hostname,
-      top: window === window.top,
-      names: names.slice(0, 14).map(e => e.name),
-      count: names.length,
-      archiveMarker: Boolean(document.body && /Диск 2\.rar|1286 объектов/i.test(
-        (document.body.innerText || "").slice(0, 4000))),
-      frames: document.querySelectorAll("iframe").length,
-      knownReadme: names.some(e => e.name.toUpperCase() === "README.TXT")
+      host:location.hostname,
+      count:items.filter(x => x.kind === "file").length,
+      folders:items.filter(x => x.kind === "folder").length,
+      unknown:items.filter(x => x.kind === "unknown").length,
+      names:items.slice(0,12).map(x => x.name),
+      knownReadme:items.some(x => x.name === "README.TXT" && x.kind === "file"),
+      rowSelector:'[title][class*="resourceItem_"]',
+      example:items.find(x => x.kind === "file") || null
     };
-  }
-  function clickName(target) {
-    const all = entries();
-    let best = null;
-    let closestDistance = 100;
-    for (const item of all) {
-      let cur = item.el;
-      for (let level = 0; cur && level < 9; level++, cur = cur.parentElement) {
-        if (cur === target || cur.contains(target)) {
-          if (level < closestDistance) {
-            best = item; closestDistance = level;
-          }
-          break;
-        }
+  };
+  const getFileRows = () => current().map(row => dom.itemOf(row));
+  const delay = ms => new Promise(resolve => setTimeout(resolve,ms));
+
+  async function trigger(message) {
+    const name = String(message.name || "");
+    if (!name || name.length > 200 || name.includes("/") || name.includes("\\"))
+      return {ok:false,error:"invalid-file-name"};
+    const row = dom.rowNamed(document,name);
+    if (!row) return {ok:false,error:"file-row-not-visible",name};
+    try { row.scrollIntoView({block:"nearest",inline:"nearest"}); } catch (_) {}
+    // React may create the action buttons only while the row is hovered.
+    // JavaScript hover events do not change CSS :hover, but they may trigger
+    // React mouse handlers. Missing controls result in an explicit diagnostic.
+    row.dispatchEvent(new MouseEvent("mouseover",{bubbles:true,composed:true}));
+    row.dispatchEvent(new MouseEvent("mouseenter",{bubbles:false,composed:true}));
+    await delay(90);
+    if (!document.contains(row)) return {ok:false,error:"row-disappeared"};
+    const allowInferred = message.pilot === true ||
+      (Boolean(message.approvedMode) && message.approvedMode !== "label");
+    const action = dom.actionOf(row,allowInferred);
+    if (!action.element) {
+      return {ok:false,error:action.error || "button-missing",controls:action.count || 0};
+    }
+    if (!message.pilot) {
+      if (!message.approvedMode || message.approvedMode !== action.mode ||
+        Number(message.approvedSlots) !== action.slotCount) {
+        return {ok:false,error:"action-layout-changed",mode:action.mode,slots:action.slotCount};
       }
     }
-    return best;
-  }
-  function handlePick(event) {
-    if (!pickerActive) return;
-    const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-    if (!target || target.closest("#rr-recovery-panel")) return;
-    pickerActive = false;
-    clearTimeout(pickTimer);
-    document.removeEventListener("click", handlePick, true);
-    const item = clickName(target);
-    const payload = item ?
-      {
-        kind: "RR_SENSOR_PICKED", host: location.hostname, found: true, name: item.name,
-        ancestry: ancestry(item.el, 7),
-        clickedTag: target.tagName.toLowerCase(),
-        count: entries().length
-      } : {
-        kind: "RR_SENSOR_PICKED", host: location.hostname, found: false,
-        clickedTag: target.tagName.toLowerCase(),
-        count: entries().length,
-        ancestry: ancestry(target, 3)
-      };
-    tell(payload);
-    // Deliberately do not preventDefault: the Yandex viewer keeps working.
-  }
-  function startPick() {
-    clearTimeout(pickTimer);
-    pickerActive = true;
-    document.removeEventListener("click", handlePick, true);
-    document.addEventListener("click", handlePick, true);
-    pickTimer = setTimeout(() => {
-      pickerActive = false;
-      document.removeEventListener("click", handlePick, true);
-    }, 45000);
+    if (action.element.hasAttribute("disabled")) return {ok:false,error:"action-disabled"};
+    action.element.click();
+    return {ok:true,clicked:true,name,mode:action.mode,slots:action.slotCount};
   }
 
-  chrome.runtime.onMessage.addListener(message => {
-    if (!message || !message.kind) return;
+  function scroll(message) {
+    const rows = current();
+    const scroll = dom.scrollerOf(rows[0],document);
+    if (!scroll) return {ok:true,scrollable:false,visible:rows.length};
+    if (message.reset) scroll.scrollTop = 0;
+    else scroll.scrollTop = Math.min(scroll.scrollHeight,
+      scroll.scrollTop + Math.max(100,Math.round(scroll.clientHeight*.75)));
+    return {
+      ok:true,scrollable:true,top:scroll.scrollTop,height:scroll.scrollHeight,
+      viewport:scroll.clientHeight,atEnd:scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 4
+    };
+  }
+
+  chrome.runtime.onMessage.addListener((message,_sender,sendResponse) => {
+    if (!message || !message.kind) return false;
     if (message.kind === "RR_SENSOR_SCAN") {
-      tell(snapshot(message.requestId));
-      // Yandex renders the archive list asynchronously.
-      setTimeout(() => tell(snapshot(message.requestId)), 1000);
+      replyToPanel(summarize(message.requestId));
+      setTimeout(()=>replyToPanel(summarize(message.requestId)),700);
+      return false;
     }
-    if (message.kind === "RR_SENSOR_START_PICK") startPick();
-    if (message.kind === "RR_SENSOR_STOP_PICK") {
-      pickerActive = false;
-      clearTimeout(pickTimer);
-      document.removeEventListener("click", handlePick, true);
+    if (message.kind === "RR_SENSOR_LIST") {
+      sendResponse({ok:true,items:getFileRows(),host:location.hostname});
+      return false;
     }
+    if (message.kind === "RR_SENSOR_SCROLL") {
+      sendResponse(scroll(message));
+      return false;
+    }
+    if (message.kind === "RR_SENSOR_TRIGGER") {
+      void trigger(message).then(sendResponse,error =>
+        sendResponse({ok:false,error:String(error && error.message || error).slice(0,140)}));
+      return true;
+    }
+    return false;
   });
 })();
