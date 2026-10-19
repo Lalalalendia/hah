@@ -31,17 +31,21 @@ function findByDownloadId(id) {
   return Object.values(watchers).find(w => w.downloadId === id);
 }
 function findActiveWatcher(item) {
-  if (!RarRescueUtils.isDownloadHost(item.url || "")) return null;
-  const direct = watchers[String(item.tabId)];
-  if (direct && Date.now() - direct.started < 120000) return direct;
-  // Certain Yandex-created downloads have tabId=-1. Only correlate when
-  // there is exactly ONE armed tab and its request is still very recent.
-  if (item.tabId !== -1) return null;
-  const candidates = Object.values(watchers).filter(w =>
-    Date.now() - w.started < 25000 && w.downloadId == null);
-  return candidates.length === 1 ? candidates[0] : null;
+  if (!RarRescueUtils.isDownloadHost(item.url || item.finalUrl || "")) return null;
+  const now=Date.now();
+  const direct=watchers[String(item.tabId)];
+  if (direct && direct.downloadId == null && now-direct.started < 90000) return direct;
+  // A file downloaded from an embedded Yandex viewer can have a different
+  // tabId from the parent Disk page. Correlate only a SINGLE fresh armed
+  // watcher AND a filename match; never claim arbitrary browser downloads.
+  const candidates=Object.values(watchers).filter(w=>
+    w.downloadId == null && now-w.started < 60000);
+  if(candidates.length!==1)return null;
+  const record=candidates[0];
+  const basename=String(item.filename || "").replace(/\\/g,"/").split("/").pop().toLowerCase();
+  if(!basename) return item.tabId === -1 ? record : null;
+  return basename === String(record.filename || "").toLowerCase() ? record : null;
 }
-
 async function complete(record, status, reason, item) {
   if (watchers[String(record.tabId)] !== record) return;
   const ledger = (await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY] || {};
@@ -120,8 +124,10 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         const pathname = String(item.filename || "").replace(/\\/g,"/");
         let host = "";
         try {host = new URL(item.finalUrl || item.url || "").hostname || "blob";}catch (_) {}
+        let sourceScheme="";
+        try {sourceScheme=new URL(item.url||"").protocol.replace(":","");}catch (_) {}
         return {
-          id:item.id, state:item.state,
+          id:item.id, state:item.state,sourceScheme,
           bytes:Number(item.bytesReceived)||0,
           size:Number(item.totalBytes)||0,
           savedToRecovery:pathname.toLowerCase().endsWith(expected.toLowerCase()),
@@ -163,7 +169,8 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       if (watchers[String(tabId)]) throw new Error("A download is already pending");
       const target = RarRescueUtils.relative(folder, filename);
       watchers[String(tabId)] = {
-        tabId, token, key, target, started: Date.now(), downloadId: null
+        tabId, token, key, target, filename,
+        started: Date.now(), downloadId: null
       };
       await saveWatchers();
       respond({ ok: true });
