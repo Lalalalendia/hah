@@ -546,23 +546,31 @@
             const record=tree.files[original];
             if(!record)throw new Error("Файл отсутствует в манифесте: "+original);
             const local=await countDownloads();
-            if(local[keyFor(entry.name,item.path)]?.state==="downloaded") {
+            const recordedState=local[keyFor(entry.name,item.path)]?.state;
+            if(recordedState==="downloaded"){
               record.status="downloaded";
               await saveTree();continue;
+            }
+            if(["armed","awaiting","needs-review"].includes(recordedState)) {
+              record.status="needs-review";
+              record.error="Previously requested but not confirmed; do not duplicate";
+              await saveTree();
+              throw new Error("Предыдущая загрузка "+original+" не разрешена. Сначала проверь её в браузере.");
             }
             progress=original+" · восстановление";render();
             const result=await retryDownload(frame.frameId,entry.name,false,approved,3,item.path);
             record.attempts=(record.attempts||0)+1;
             record.status=result.state==="downloaded"?"downloaded":
-              result.state==="timeout"?"needs-review":"failed";
+              result.state==="failed"?"failed":"needs-review";
             record.bytes=Number(result.bytes)||0;
             record.error=result.state==="downloaded"?"":String(result.reason||result.state).slice(0,180);
             await saveTree();
-            if(result.state==="timeout" && result.started){
+            if(result.state!=="downloaded"){
               stopRequested=true;
-              notice="Загрузка "+original+" не завершилась. Дальнейшие запросы остановлены.";show(notice);
+              notice="Исход "+original+" не подтверждён. Очередь остановлена без повторного скачивания.";
+              show(notice);
             }
-            if(!stopRequested)await sleep(700);
+            if(!stopRequested)await sleep(2500);
           }
         }
         if(stopRequested)break;
@@ -590,7 +598,9 @@
       notice="Восстановление остановлено. Уже полученные файлы остаются в каталоге загрузок; вернись в корень для продолжения.";
       show(notice);
     } catch(error){
-      tree.issues.push({path:"",reason:"recovery-interrupted",detail:String(error.message||error).slice(0,180)});
+      (tree.recoveryIssues ||= []).push({
+        path:"",reason:"recovery-interrupted",detail:String(error.message||error).slice(0,180)
+      });
       await saveTree();
       notice="Восстановление остановлено: "+error.message+
         ". Подробности в JSON. Не удаляй уже скачанные файлы.";
