@@ -211,38 +211,88 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     }
     if (message.kind === "RR_ARM") {
       if (sender.frameId !== 0) throw new Error("Only the top-level panel can arm a download");
-      const token = String(message.token || "").slice(0, 80);
-      const key = String(message.key || "").slice(0, 500);
-      const filename = String(message.filename || "");
-      const folder = String(message.folder || "");
-      if (!token || !key) throw new Error("Missing download identity");
-      const stale=watchers[String(tabId)];
-      if (stale && Date.now()-stale.started > 4*60*1000) {
-        delete watchers[String(tabId)];
-        await saveWatchers();
-      }
-      if (watchers[String(tabId)]) throw new Error("A download is already pending");
-      const target = RarRescueUtils.relative(folder, filename);
-      watchers[String(tabId)] = {
-        tabId, token, key, target, filename,
-        started: Date.now(), downloadId: null
-      };
+      const token=String(message.token||"").slice(0,80);
+      const key=String(message.key||"").slice(0,500);
+      const filename=String(message.filename||"");
+      const folder=String(message.folder||"");
+      if(!token || !key)throw new Error("Missing download identity");
+      const target=RarRescueUtils.relative(folder,filename);
+      if(key!=="Disk-2.rar/"+(folder?folder+"/":"")+filename)
+        throw new Error("Download path identity mismatch");
+      const ledger=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY]||{};
+      if(["downloaded","armed","awaiting","needs-review"].includes(ledger[key]?.state))
+        throw new Error("File already downloaded or its previous click is unresolved; no repeated clicks");
+      if(Object.keys(watchers).length)
+        throw new Error("Another download remains pending/unconfirmed. Check it before starting another");
+      const record={tabId,token,key,target,filename,started:Date.now(),
+        downloadId:null,clicked:false,confirmedByBrowser:false};
+      watchers[String(tabId)]=record;
+      ledger[key]={state:"armed",token,filename,target,started:record.started,
+        time:new Date().toISOString(),reason:"Armed, no click confirmed yet"};
+      await chrome.storage.local.set({[LEDGER_KEY]:ledger});
       await saveWatchers();
-      respond({ ok: true });
-    } else if (message.kind === "RR_RELEASE") {
-      const active = watchers[String(tabId)];
-      if (active && active.token === message.token) {
-        delete watchers[String(tabId)];
-        await saveWatchers();
+      respond({ok:true});
+    } else if(message.kind==="RR_CLICK_SENT") {
+      const record=watchers[String(tabId)];
+      if(!record || record.token!==message.token)
+        throw new Error("No matching armed file");
+      record.clicked=true;
+      await saveWatchers();
+      const ledger=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY]||{};
+      if(ledger[record.key]?.state!=="downloaded") {
+        ledger[record.key]={state:"awaiting",token:record.token,
+          target:record.target,filename:record.filename,started:record.started,
+          time:new Date().toISOString(),reason:"Viewer click emitted; server response may be delayed"};
+        await chrome.storage.local.set({[LEDGER_KEY]:ledger});
       }
       respond({ok:true});
-    } else if (message.kind === "RR_DISARM") {
-      const active = watchers[String(tabId)];
-      if (active && active.token === message.token && active.downloadId == null) {
-        delete watchers[String(tabId)];
-        await saveWatchers();
+    } else if(message.kind==="RR_CHECK_ATTEMPT") {
+      if(sender.frameId!==0)throw new Error("Only main panel can inspect pending attempt");
+      const record=watchers[String(tabId)];
+      if(!record || record.token!==message.token) {
+        const ledger=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY]||{};
+        const entry=ledger[String(message.key||"")];
+        respond({ok:true,state:entry?.state||"none",
+          reason:String(entry?.reason||"").slice(0,120),bytes:entry?.bytes||0});
+        return;
       }
-      respond({ ok: true });
+      const item=record.downloadId!=null?
+        (await chrome.downloads.search({id:record.downloadId}))[0]:
+        await latestAttemptItem(record);
+      if(item && record.downloadId==null) {
+        record.downloadId=item.id;
+        await saveWatchers();
+        await notify(record.tabId,{kind:"RR_STARTED",token:record.token});
+      }
+      if(item) await completeFromChrome(record,item);
+      const ledger=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY]||{};
+      const state=ledger[record.key]?.state||"armed";
+      respond({ok:true,state:state==="armed"?"awaiting":state,
+        browserState:item?.state||"not-yet-visible",
+        bytes:Number(item?.bytesReceived)||0,
+        reason:String(ledger[record.key]?.reason||"").slice(0,120)});
+    } else if(message.kind==="RR_MARK_UNKNOWN") {
+      if(sender.frameId!==0)throw new Error("Only main panel can suspend pending download");
+      const record=watchers[String(tabId)];
+      if(record && record.token===message.token)
+        await markReview(record,"Browser did not conclusively report a result. Do not retry automatically.");
+      respond({ok:true});
+    } else if(message.kind==="RR_RELEASE" || message.kind==="RR_DISARM") {
+      const active=watchers[String(tabId)];
+      if(active && active.token===message.token) {
+        if(active.clicked || active.downloadId!=null) {
+          await markReview(active,"File click/download started; further clicks blocked pending reconciliation");
+        } else {
+          const ledger=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY]||{};
+          if(ledger[active.key]?.state==="armed"){
+            delete ledger[active.key];
+            await chrome.storage.local.set({[LEDGER_KEY]:ledger});
+          }
+          delete watchers[String(tabId)];
+          await saveWatchers();
+        }
+      }
+      respond({ok:true});
     } else {
       respond({ ok: false, error: "Unknown action" });
     }
