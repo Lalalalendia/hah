@@ -51,6 +51,7 @@ try:
       }};
     """)
     drv.execute_script((ROOT/"archive-dom.js").read_text())
+    drv.execute_script((ROOT/"archive-crawler.js").read_text())
     drv.execute_script((ROOT/"frame-sensor.js").read_text())
     listing=drv.execute_async_script("""
       const cb=arguments[arguments.length-1];
