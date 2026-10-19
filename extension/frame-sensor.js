@@ -34,7 +34,11 @@
     const name = String(message.name || "");
     if (!name || name.length > 200 || name.includes("/") || name.includes("\\"))
       return {ok:false,error:"invalid-file-name"};
-    const row = dom.rowNamed(document,name);
+    // The viewer virtualizes long folder lists. During recursive recovery the
+    // requested file may not currently be rendered; locate it by scrolling
+    // within the CURRENT verified directory, not by clicking a random row.
+    const row = dom.rowNamed(document,name) ||
+      (message.allowLocate === true ? await crawler.locate(name,"file") : null);
     if (!row) return {ok:false,error:"file-row-not-visible",name};
     try { row.scrollIntoView({block:"nearest",inline:"nearest"}); } catch (_) {}
     // React may create the action buttons only while the row is hovered.
