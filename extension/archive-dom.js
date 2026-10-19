@@ -30,12 +30,12 @@
       el.getAttribute("aria-label") || ""
     ]).filter(Boolean))];
     const lowered = tokens.join(" ").toLowerCase();
-    const folder = /(?:^|[\\s_-])(?:folder|directory|catalog|dir)(?:$|[\\s_-])/i.test(lowered);
+    const folder = /(?:^|[\s_-])(?:folder|directory|catalog|dir)(?:$|[\s_-])/i.test(lowered);
     // file-icon is a generic widget, not definitive evidence of a file.
     const typed = tokens.some(t =>
       /file-icon_(?!size(?:_|$)|folder(?:_|$)|dir(?:_|$)|directory(?:_|$))[a-z0-9_-]+/i.test(t));
     const explicitlyFile = tokens.some(t =>
-      /(?:^|[\\s_-])(?:file|document|executable|blank)(?:$|[\\s_-])/i.test(t) &&
+      /(?:^|[\s_-])(?:file|document|executable|blank)(?:$|[\s_-])/i.test(t) &&
       !/^(?:file-icon|file-icon_size(?:_.*)?)$/i.test(t)
     );
     return {folder, file:typed || explicitlyFile, tokens:tokens.slice(0, 8)};
