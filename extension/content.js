@@ -46,7 +46,10 @@
   }
 
   function selectorForRow(row) {
-    const classes = Array.from(row.classList).filter(c => !/^(active|selected|hover|focus)$/i.test(c)).slice(0, 2);
+    const peers = Array.from(row.parentElement.children).filter(el => el.tagName === row.tagName);
+    const classes = Array.from(row.classList).filter(c =>
+      !/^(active|selected|hover|focus)$/i.test(c) && peers.every(el => el.classList.contains(c))
+    ).slice(0, 2);
     const part = classes.map(c => "." + CSS.escape(c)).join("");
     return row.tagName.toLowerCase() + part;
   }
