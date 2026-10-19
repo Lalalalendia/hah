@@ -577,7 +577,6 @@
     }catch(error){notice="Не могу запустить двойную приёмку: "+error.message;show(notice);return;}
     running=true;stopRequested=false;treePhase="nested-pilot";treeFrame=frame.frameId;
     nestedPilotPlan=plan;
-    const wanted=new Map(plan.files.map(f=>[f.sourcePath,f]));
     const confirmed=new Set();
     tree.nestedPilot={passed:false,status:"running",
       startedAt:new Date().toISOString(),files:plan.files.map(f=>f.sourcePath),
@@ -694,6 +693,8 @@
             const recordedState=local[keyFor(entry.name,item.path)]?.state;
             if(recordedState==="downloaded"){
               record.status="downloaded";
+              record.bytes=Number(local[keyFor(entry.name,item.path)]?.bytes)||record.bytes||0;
+              record.error="";
               await saveTree();continue;
             }
             if(["armed","awaiting","needs-review"].includes(recordedState)) {
