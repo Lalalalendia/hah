@@ -1,4 +1,4 @@
-/* Main-frame controller for Yandex RAR Rescue v0.3.
+/* Main-frame controller for Yandex RAR Rescue v0.4.
    Never reads account cookies, document payloads or signed download URLs. */
 (() => {
   "use strict";
@@ -75,7 +75,7 @@
     panel=document.createElement("section");
     panel.id="rr-recovery-panel";
     panel.innerHTML = [
-      '<header><strong>RAR Rescue v0.3</strong><button id="rr-close" title="Закрыть">×</button></header>',
+      '<header><strong>RAR Rescue v0.4</strong><button id="rr-close" title="Закрыть">×</button></header>',
       '<p>Диск 2.rar — 1286 объектов, включая папки. Ручное обучение больше не требуется.</p>',
       '<div class="rr-actions"><button id="rr-scan">1. Найти файлы</button><button id="rr-check">2. Учесть скачанный README</button></div>',
       '<div class="rr-actions"><button id="rr-pilot">3. Проверить новую загрузку</button></div>',
@@ -319,7 +319,7 @@
 
   async function diagnostics() {
     const report={
-      tool:"RAR Rescue v0.3",
+      tool:"RAR Rescue v0.4",
       targetArchive:"Disk 2.rar",
       frames:[...frames.values()].map(x=>({
         id:x.frameId,host:x.host,count:x.count,folders:x.folders,unknown:x.unknown,
