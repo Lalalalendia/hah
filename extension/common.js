@@ -22,7 +22,9 @@
   function isDownloadHost(url) {
     try {
       const u = new URL(url);
-      if (u.protocol === "blob:") return u.origin === "https://disk.yandex.ru";
+      if (u.protocol === "blob:") return [
+        "https://disk.yandex.ru", "https://docviewer.yandex.ru", "https://docviewer.360.yandex.ru"
+      ].includes(u.origin);
       return u.protocol === "https:" && (
         u.hostname === "disk.yandex.ru" ||
         u.hostname === "docviewer.yandex.ru" ||
