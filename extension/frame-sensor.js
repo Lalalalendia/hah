@@ -3,6 +3,7 @@
 (() => {
   "use strict";
   const dom = globalThis.RarRescueDOM;
+  const crawler = new globalThis.RarRescueCrawler(document,dom);
   const replyToPanel = payload => {
     try { chrome.runtime.sendMessage(payload).catch(() => {}); } catch (_) {}
   };
@@ -81,6 +82,21 @@
     if (message.kind === "RR_SENSOR_SCAN") {
       replyToPanel(summarize(message.requestId));
       setTimeout(()=>replyToPanel(summarize(message.requestId)),700);
+      return false;
+    }
+    if (message.kind === "RR_SENSOR_CRAWL_BEGIN") {
+      void crawler.begin().then(sendResponse,error=>
+        sendResponse({ok:false,error:String(error.message || error)}));
+      return true;
+    }
+    if (message.kind === "RR_SENSOR_CRAWL_STEP") {
+      void crawler.step().then(sendResponse,error=>
+        sendResponse({ok:false,error:String(error.message || error)}));
+      return true;
+    }
+    if (message.kind === "RR_SENSOR_CRAWL_STATUS") {
+      sendResponse({ok:true,halted:crawler.halted,depth:crawler.frames.length,
+        paths:crawler.seenPaths.size,objects:crawler.objectCount});
       return false;
     }
     if (message.kind === "RR_SENSOR_LIST") {
