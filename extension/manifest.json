@@ -5,8 +5,7 @@
   "description": "Download individual files from Yandex Disk archive preview with retries and local progress tracking.",
   "permissions": [
     "downloads",
-    "storage",
-    "tabs"
+    "storage"
   ],
   "host_permissions": [
     "https://disk.yandex.ru/*"
