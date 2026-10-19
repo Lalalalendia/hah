@@ -98,6 +98,42 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       respond({ ok: true });
       return;
     }
+    if (message.kind === "RR_INSPECT_DOWNLOADS") {
+      if (sender.frameId !== 0) throw new Error("Only main recovery panel may inspect downloads");
+      const filename = String(message.filename || "");
+      const folder = String(message.folder || "");
+      const expected = RarRescueUtils.relative(folder, filename);
+      const basename = filename.toLowerCase();
+      // Read only the newest browser entries and report matches to the file
+      // the user explicitly selected. Never return unrelated download history.
+      const found = await chrome.downloads.search({limit:180,orderBy:["-startTime"]});
+      const now = Date.now();
+      const matches = found.filter(item => {
+        const name = String(item.filename || "").replace(/\\/g,"/").split("/").pop();
+        if (name.toLowerCase() !== basename) return false;
+        const started = Date.parse(item.startTime || "");
+        if (!Number.isFinite(started) || now-started > 4*60*60*1000 || started-now>60000) return false;
+        return RarRescueUtils.isDownloadHost(item.url || "") ||
+          RarRescueUtils.isDownloadHost(item.finalUrl || "") ||
+          item.tabId === tabId;
+      }).slice(0,4).map(item => {
+        const pathname = String(item.filename || "").replace(/\\/g,"/");
+        let host = "";
+        try {host = new URL(item.finalUrl || item.url || "").hostname || "blob";}catch (_) {}
+        return {
+          id:item.id, state:item.state,
+          bytes:Number(item.bytesReceived)||0,
+          size:Number(item.totalBytes)||0,
+          savedToRecovery:pathname.toLowerCase().endsWith(expected.toLowerCase()),
+          sourceHost:host.slice(0,100),
+          browserTabMatched:item.tabId === tabId,
+          ageSeconds:Math.max(0,Math.round((now-Date.parse(item.startTime))/1000)),
+          error:String(item.error || "").slice(0,100)
+        };
+      });
+      respond({ok:true,matches});
+      return;
+    }
     if (message.kind === "RR_FRAME_CALL") {
       if (sender.frameId !== 0) throw new Error("Only the top-level panel can call viewer");
       const frameId = Number(message.frameId);
