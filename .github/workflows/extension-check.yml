@@ -25,3 +25,13 @@ jobs:
           node --check extension/tests/smoke.cjs
       - name: Security and manifest smoke tests
         run: node extension/tests/smoke.cjs
+      - name: Package unpacked Chromium extension
+        run: |
+          cd extension
+          zip -qr ../rar-rescue-extension.zip .
+      - name: Upload installable extension ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: rar-rescue-extension-mv3
+          path: rar-rescue-extension.zip
+          retention-days: 7
