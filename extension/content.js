@@ -218,6 +218,31 @@
       const result=await downloadOnce(frameId,name,pilotMode,approvedMode);
       if (result.state==="downloaded") return result;
       show(name+": "+result.state+" · "+(result.reason || ""));
+      // The Yandex viewer may trigger a download that escaped our onCreated
+      // correlation. Before retrying, check browser history for the SAME
+      // filename and recovery directory. Otherwise duplicate writes are likely.
+      try {
+        const recent=await send({kind:"RR_INSPECT_DOWNLOADS",filename:name,folder});
+        lastInspection=recent.matches || [];
+        const active=lastInspection.find(x=>x.ageSeconds<90 && x.state==="in_progress");
+        if(active) {
+          return {state:"timeout",started:true,reason:"Browser download is still active; retries suspended"};
+        }
+        const complete=lastInspection.find(x=>
+          x.ageSeconds<90 && x.state==="complete" && x.bytes>0 &&
+          x.savedToRecovery && x.exists!==false);
+        if(complete && result.mode && Number.isFinite(result.slots)) {
+          const ledger=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY] || {};
+          ledger[keyFor(name)]={
+            state:"downloaded",bytes:complete.bytes,time:new Date().toISOString(),
+            method:"recent-browser-reconciliation",downloadId:complete.id
+          };
+          await chrome.storage.local.set({[LEDGER_KEY]:ledger});
+          await countDownloads();
+          show("Подтверждено по истории браузера: "+name+" ("+complete.bytes+" байт)");
+          return {...result,state:"downloaded",bytes:complete.bytes};
+        }
+      } catch(error) {show("Не удалось проверить историю: "+error.message);}
       // If browser started a transfer but it never completed, do not start
       // another copy; let the user inspect/stop the stalled browser transfer.
       if (result.state==="timeout" && result.started) return result;
