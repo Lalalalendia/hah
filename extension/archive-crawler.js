@@ -38,11 +38,14 @@
       if(scroller) {scroller.scrollTop=0;await this.delay(120);}
       for(let step=0;step<this.maxScrollSteps;step++){
         rows=this.currentRows();
+        const namesInViewport=new Set();
         for(const row of rows) {
           const info=dom.itemOf(row);
           if(!info.name)continue;
           if(!/^[^\u0000-\u001f/\\]{1,200}$/.test(info.name))
             return {ok:false,error:"unsafe-entry-name"};
+          if(namesInViewport.has(info.name))duplicates.add(info.name);
+          namesInViewport.add(info.name);
           if(items.has(info.name)) {
             const prior=items.get(info.name);
             if(prior.kind!==info.kind) duplicates.add(info.name);
@@ -59,7 +62,7 @@
         scroller.scrollTop=Math.min(scroller.scrollHeight,old+Math.max(80,Math.floor(scroller.clientHeight*.72)));
         positions++;
         await this.delay(100);
-        if(scroller.scrollTop===old)break;
+        if(scroller.scrollTop===old){complete=false;break;}
         if(step===this.maxScrollSteps-1)complete=false;
       }
       if(scroller) {scroller.scrollTop=0;await this.delay(130);}
