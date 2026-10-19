@@ -223,6 +223,24 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       const ledger=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY]||{};
       if(["downloaded","armed","awaiting","needs-review"].includes(ledger[key]?.state))
         throw new Error("File already downloaded or its previous click is unresolved; no repeated clicks");
+      if(!ledger[key]) {
+        // Survive extension reinstall/import when Chrome already has a valid
+        // completed file in the exact destination but the local ledger is empty.
+        const prior=await chrome.downloads.search({limit:300,orderBy:["-startTime"]});
+        const existing=prior.find(item=>
+          item.state==="complete" && item.exists!==false &&
+          Number(item.bytesReceived)>0 &&
+          RarRescueUtils.isDownloadHost(item.url || item.finalUrl || "") &&
+          String(item.filename||"").replace(/\\/g,"/").toLowerCase()
+            .endsWith("/"+target.toLowerCase()));
+        if(existing) {
+          ledger[key]={state:"downloaded",reason:"Existing completed browser download at exact target",
+            bytes:Number(existing.bytesReceived),time:new Date().toISOString(),
+            downloadId:existing.id,target};
+          await chrome.storage.local.set({[LEDGER_KEY]:ledger});
+          throw new Error("File already exists in recovery directory; skipped to avoid duplicate");
+        }
+      }
       if(Object.keys(watchers).length)
         throw new Error("Another download remains pending/unconfirmed. Check it before starting another");
       const record={tabId,token,key,target,filename,started:Date.now(),
