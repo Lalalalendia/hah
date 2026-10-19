@@ -1,0 +1,119 @@
+name: Recover Yandex Disk RAR
+
+on:
+  push:
+    paths:
+      - ".github/workflows/recover-yandex-rar.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Probe the public link and attempt verified recovery
+        id: recovery
+        shell: bash
+        env:
+          YANDEX_PUBLIC_URL: "https://disk.yandex.ru/d/_RSlWomRWmty1w"
+          EXPECTED_SIZE: "244374677"
+          EXPECTED_SHA256: "2f980815b8267d1ab6cf5c8f1cf867542fa60b9469a3d0c6c4d15c217c577ad5"
+        run: |
+          set -uo pipefail
+          mkdir -p output
+          LOG="output/diagnostics.txt"
+          : > "$LOG"
+          report() { printf '%s\n' "$*" | tee -a "$LOG"; }
+          report "Public Yandex archive: Disk 2.rar"
+          report "Expected size: $EXPECTED_SIZE bytes"
+          report "Expected SHA256: $EXPECTED_SHA256"
+          report "Runner: $(uname -a)"
+          report "Timestamp UTC: $(date -u +%FT%TZ)"
+          get_href() {
+            python3 -c '
+          import json, os, urllib.parse, urllib.request
+          url = "https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=" + urllib.parse.quote(os.environ["YANDEX_PUBLIC_URL"], safe="")
+          req = urllib.request.Request(url, headers={"User-Agent": "archive-recovery-check/1.0"})
+          with urllib.request.urlopen(req, timeout=30) as response:
+              print(json.load(response)["href"])
+          '
+          }
+          for attempt in 1 2 3 4; do
+            report ""
+            report "=== Attempt $attempt/4 ==="
+            HREF="$(get_href 2>>"$LOG")" || {
+              report "Failed to obtain a fresh download URL."
+              sleep 5
+              continue
+            }
+            report "Fresh direct URL obtained (not printed because it is signed)."
+            curl -sSIL --connect-timeout 12 --max-time 25 \
+              -o "output/head-$attempt.txt" "$HREF" 2>>"$LOG" || true
+            report "HEAD responses:"
+            grep -iE '^(HTTP/|content-length:|accept-ranges:|content-range:)' \
+              "output/head-$attempt.txt" | tail -n 12 | tee -a "$LOG" || true
+            range_code="$(curl -sSL --connect-timeout 12 --max-time 30 \
+              --range 0-1023 --max-filesize 2048 \
+              -D "output/range-$attempt.txt" \
+              -o "output/sample-$attempt.bin" -w '%{http_code}' \
+              "$HREF" 2>>"$LOG")" || true
+            range_bytes=0
+            if test -f "output/sample-$attempt.bin"; then
+              range_bytes="$(stat -c %s "output/sample-$attempt.bin")"
+            fi
+            report "GET Range=0-1023: HTTP $range_code; saved $range_bytes bytes"
+            grep -iE '^(HTTP/|content-length:|accept-ranges:|content-range:)' \
+              "output/range-$attempt.txt" | tail -n 12 | tee -a "$LOG" || true
+            rm -f "output/sample-$attempt.bin"
+            report "Attempting full download (or resume)."
+            curl_code=0
+            curl -fLsS --connect-timeout 12 --max-time 150 \
+              --speed-time 30 --speed-limit 1024 \
+              --continue-at - --output "output/Disk-2.rar" \
+              "$HREF" 2>>"$LOG" || curl_code=$?
+            bytes=0
+            if test -f "output/Disk-2.rar"; then
+              bytes="$(stat -c %s "output/Disk-2.rar")"
+            fi
+            report "Full/resume curl exit: $curl_code; downloaded: $bytes bytes"
+            if test "$bytes" = "$EXPECTED_SIZE"; then
+              actual="$(sha256sum "output/Disk-2.rar" | cut -d ' ' -f 1)"
+              report "Actual SHA256: $actual"
+              if test "$actual" = "$EXPECTED_SHA256"; then
+                report "RESULT: VERIFIED COMPLETE ARCHIVE"
+                echo "verified=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              report "Checksum mismatch. Deleting corrupt data."
+              rm -f "output/Disk-2.rar"
+            fi
+            if test "$curl_code" = 33; then
+              report "Server did not honor resume; discarding partial data."
+              rm -f "output/Disk-2.rar"
+            fi
+            sleep 8
+          done
+          report "RESULT: FAILED. No verified archive; see response codes above."
+          echo "verified=false" >> "$GITHUB_OUTPUT"
+          exit 1
+
+      - name: Upload diagnostic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yandex-rar-diagnostics
+          path: output/diagnostics.txt
+          retention-days: 3
+          if-no-files-found: warn
+
+      - name: Upload SHA256-verified RAR
+        if: steps.recovery.outputs.verified == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Disk-2-RAR-verified
+          path: output/Disk-2.rar
+          retention-days: 1
+          if-no-files-found: error
