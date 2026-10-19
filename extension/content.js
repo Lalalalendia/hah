@@ -14,6 +14,7 @@
   let progress = "";
   let lastInspection = [];
   let nativeVerified = false;
+  let lastAutoCommand = null;
   let tree = null;
   let treePhase = "";
   let treeFrame = null;
@@ -231,6 +232,8 @@
         approvedMode:approvedMode?.mode || null,
         approvedSlots:approvedMode?.slots ?? null
       });
+      lastAutoCommand={name:action.name,clicked:action.clicked,mode:action.mode,slots:action.slots,
+        userActivationAtClick:action.userActivationAtClick,syntheticClick:action.syntheticClick};
       if (!action.clicked) throw new Error("Встроенная кнопка скачивания не нажата");
       show("Команда скачивания отправлена: "+name+" ("+action.mode+", кнопок: "+action.slots+")");
     } catch(error) {
@@ -296,7 +299,7 @@
       const target=await choosePilot(frame);
       if (!target) throw new Error("В этой папке нет README.TXT или другого небольшого текстового файла.");
       show("Пробный файл: "+target.name+". Запускаю его кнопку скачивания внутри строки.");
-      const result=await retryDownload(frame.frameId,target.name,true,null,2);
+      const result=await retryDownload(frame.frameId,target.name,true,null,1);
       if (result.state==="downloaded") {
         approved={frameId:frame.frameId,mode:result.mode,slots:result.slots,
           checkedFile:target.name,host:frame.host};
@@ -656,6 +659,7 @@
       })),
       approved:approved?{mode:approved.mode,slots:approved.slots,host:approved.host}:null,
       nativeVerified,
+      lastAutoCommand,
       lastInspection,
       treeSummary: tree ? {scanned:tree.scanned,complete:tree.complete,objects:tree.observedObjects,
         directories:Object.keys(tree.directories||{}).length,files:Object.keys(tree.files||{}).length,
