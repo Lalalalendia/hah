@@ -20,7 +20,10 @@
       names:items.slice(0,12).map(x => x.name),
       knownReadme:items.some(x => x.name === "README.TXT" && x.kind === "file"),
       rowSelector:'[title][class*="resourceItem_"]',
-      example:items.find(x => x.kind === "file") || null
+      example:items.find(x => x.kind === "file") || null,
+      iconSamples:items.slice(0, 16).map(x => ({
+        name:x.name,kind:x.kind,icons:x.iconClasses
+      }))
     };
   };
   const getFileRows = () => current().map(row => dom.itemOf(row));
@@ -53,6 +56,9 @@
       }
     }
     if (action.element.hasAttribute("disabled")) return {ok:false,error:"action-disabled"};
+    if (message.inspectOnly === true) {
+      return {ok:true,clicked:false,inspected:true,name,mode:action.mode,slots:action.slotCount};
+    }
     action.element.click();
     return {ok:true,clicked:true,name,mode:action.mode,slots:action.slotCount};
   }
