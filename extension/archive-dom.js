@@ -29,8 +29,9 @@
       el.getAttribute("data-testid") || "",
       el.getAttribute("aria-label") || ""
     ]).filter(Boolean))];
-    const lowered = tokens.join(" ").toLowerCase();
-    const folder = /(?:^|[\s_-])(?:folder|directory|catalog|dir)(?:$|[\s_-])/i.test(lowered);
+    const folder = tokens.some(t =>
+      /(?:^|[_-])(?:folder(?:icon)?|directory|catalog|dir)(?:$|[_-])/i.test(t) ||
+      /^folderIcon/i.test(t));
     // file-icon is a generic widget, not definitive evidence of a file.
     const typed = tokens.some(t =>
       /file-icon_(?!size(?:_|$)|folder(?:_|$)|dir(?:_|$)|directory(?:_|$))[a-z0-9_-]+/i.test(t));
