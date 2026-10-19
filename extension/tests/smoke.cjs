@@ -6,7 +6,19 @@ const path = require("node:path");
 const root = path.resolve(__dirname, "..");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
 assert.equal(manifest.manifest_version, 3);
-assert.deepEqual(manifest.host_permissions, ["https://disk.yandex.ru/*"]);
+assert.deepEqual(manifest.host_permissions, [
+  "https://disk.yandex.ru/*",
+  "https://docviewer.yandex.ru/*",
+  "https://docviewer.360.yandex.ru/*"
+]);
+assert(manifest.content_scripts.some(item =>
+  item.all_frames && item.js.includes("frame-sensor.js") &&
+  item.matches.includes("https://docviewer.360.yandex.ru/*")
+));
+assert(manifest.content_scripts.some(item =>
+  !item.all_frames && item.js.includes("content.js") &&
+  item.matches.length === 1 && item.matches[0] === "https://disk.yandex.ru/*"
+));
 assert(!manifest.permissions.includes("cookies"));
 assert(!manifest.permissions.includes("debugger"));
 
@@ -25,8 +37,10 @@ assert.throws(() => utils.relative("abc", "../README.TXT"), /Invalid filename/);
 assert.throws(() => utils.relative("abc", "foo/bar"), /Invalid filename/);
 assert(utils.isDownloadHost("https://2.downloader.disk.yandex.ru/disk/x?hash=secret"));
 assert(utils.isDownloadHost("https://disk.yandex.ru/x"));
+assert(utils.isDownloadHost("https://docviewer.360.yandex.ru/download/part"));
+assert(utils.isDownloadHost("https://docviewer.yandex.ru/download/part"));
 assert(!utils.isDownloadHost("http://disk.yandex.ru/x"));
 assert(!utils.isDownloadHost("https://disk.yandex.ru.attacker.invalid/x"));
 assert(!utils.isDownloadHost("https://example.net/"));
 
-console.log("OK: manifest permissions, local path safety and Yandex host matching");
+console.log("OK: cross-frame manifest, minimal permissions, local path safety and Yandex host matching");
