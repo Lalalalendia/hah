@@ -95,7 +95,7 @@
     panel=document.createElement("section");
     panel.id="rr-recovery-panel";
     panel.innerHTML = [
-      '<header><strong>RAR Rescue v0.6</strong><button id="rr-close" title="Закрыть">×</button></header>',
+      '<header><strong>RAR Rescue v0.7</strong><button id="rr-close" title="Закрыть">×</button></header>',
       '<p>Диск 2.rar — 1286 объектов, включая папки. Полное восстановление сохраняет пути и ведёт журнал.</p>',
       '<div class="rr-actions"><button id="rr-scan">1. Найти файлы</button><button id="rr-check">2. Учесть скачанный README</button></div>',
       '<div class="rr-actions"><button id="rr-native">3. Нативный тест README</button></div>',
@@ -231,7 +231,7 @@
     if(pending)throw new Error("Previous transfer has not been resolved");
     let finish;
     const waiting=new Promise(resolve=>{finish=resolve;});
-    const task={token,key,started:false,resolve:finish,timer:null,pollTimer:null};
+    const task={token,key,started:false,createdAt:Date.now(),resolve:finish,timer:null,pollTimer:null};
     pending=task;
     task.timer=setTimeout(()=>{
       if(pending?.token===token)clearPending({
@@ -241,6 +241,8 @@
     },START_WAIT_MS);
     task.pollTimer=setInterval(()=>{
       if(!pending || pending.token!==token)return;
+      progress="Ожидание "+Math.floor((Date.now()-task.createdAt)/1000)+" с — повторного запроса нет";
+      render();
       void send({kind:"RR_CHECK_ATTEMPT",token,key}).then(result=>{
         if(!pending || pending.token!==token)return;
         if(result.browserState==="in_progress")markDownloadStarted(token);
@@ -674,7 +676,7 @@
 
   async function diagnostics() {
     const report={
-      tool:"RAR Rescue v0.6",
+      tool:"RAR Rescue v0.7",
       targetArchive:"Disk 2.rar",
       frames:[...frames.values()].map(x=>({
         id:x.frameId,host:x.host,count:x.count,folders:x.folders,unknown:x.unknown,
@@ -704,15 +706,7 @@
       render();
     }
     if(message.kind==="RR_STARTED" && pending && message.token===pending.token) {
-      pending.started=true;
-      clearTimeout(pending.timer);
-      const token=pending.token;
-      pending.timer=setTimeout(()=>{
-        if(pending && pending.token===token)clearPending({
-          state:"timeout",reason:"Browser download exceeded 3 minutes",started:true
-        });
-      },180000);
-      show("Браузер начал загрузку. Ожидаю сохранения файла.");
+      markDownloadStarted(message.token);
     }
     if(message.kind==="RR_RESULT" && pending && message.token===pending.token) {
       clearPending(message);
