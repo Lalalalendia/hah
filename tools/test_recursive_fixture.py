@@ -17,12 +17,14 @@ HTML="""<!doctype html><html lang="ru"><body>
 <script>
 const trees = {
   "": [
-    ["HELP","folder"],["JRE","folder"],
+    ["HELP","folder"],["JRE","folder"],["REPORT","folder"],["PLUGINS","folder"],
     ["README.TXT","file"],["INDEX.HTM","file"],["CDVIEWER.EXE","file"]
   ],
   "HELP": [["SUB","folder"],["HELPME.TXT","file"]],
   "HELP/SUB": [["NESTED.JSON","file"]],
-  "JRE": []
+  "JRE": [],
+  "REPORT": [["README.TXT","file"]],
+  "PLUGINS": [["README.TXT","file"]]
 };
 window.currentPath="";
 window.navEvents=[];
@@ -42,7 +44,7 @@ function draw() {
     const bar=document.createElement("div");bar.className="actionBar_test";
     const download=document.createElement("button");
     download.type="button";download.textContent="↓";
-    download.onclick=(e)=>{e.stopPropagation();window.navEvents.push("download:"+name)};
+    download.onclick=(e)=>{e.stopPropagation();window.navEvents.push("download:"+window.currentPath+"/"+name)};
     bar.append(download);row.append(bar);
     row.onclick=()=>{if(kind==="folder"){window.currentPath=window.currentPath?
       window.currentPath+"/"+name:name;window.navEvents.push("enter:"+window.currentPath);draw();}};
@@ -79,16 +81,29 @@ try:
         event=call("step")
         events.append(event)
         assert event["ok"],event
+        if event["event"]=="directory" and event["path"] in ["REPORT","PLUGINS"]:
+            clicked=drv.execute_script("""
+              const row=window.RarRescueDOM.rowNamed(document,"README.TXT");
+              if(!row)return {ok:false,error:"same-name-row-not-found"};
+              const action=window.RarRescueDOM.actionOf(row,true);
+              if(!action.element)return {ok:false,error:action.error};
+              action.element.click();
+              return {ok:true,path:window.currentPath+"/README.TXT"};
+            """)
+            assert clicked["ok"],clicked
+            assert clicked["path"]==event["path"]+"/README.TXT",clicked
         if event["event"]=="complete":break
     else:raise AssertionError("Crawler did not finish")
     directory_events=[e for e in events if e["event"]=="directory"]
     visited=[e["path"] for e in directory_events]
-    assert visited==["","HELP","HELP/SUB","JRE"],visited
-    assert events[-1]["objects"]==8,events[-1]
+    assert visited==["","HELP","HELP/SUB","JRE","REPORT","PLUGINS"],visited
+    assert events[-1]["objects"]==12,events[-1]
     assert drv.execute_script("return window.currentPath")=="" 
-    assert not any("download:" in x for x in drv.execute_script("return window.navEvents"))
+    assert sorted(x for x in drv.execute_script("return window.navEvents") if x.startswith("download:")) == [
+        "download:PLUGINS/README.TXT","download:REPORT/README.TXT"
+    ]
     assert any(e["path"]=="JRE" and not e["items"] for e in directory_events)
-    print("PASS: recursive navigation, empty directories, original folder paths and return to root")
+    print("PASS: recursive navigation, empty directories, same-name nested file buttons, and return to root")
     print(json.dumps({"paths":visited,"objects":events[-1]["objects"]}))
     # An absent back control must STOP rather than silently treating a
     # nested folder as if it were the root.
