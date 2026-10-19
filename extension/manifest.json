@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Yandex RAR Rescue",
-  "version": "0.5.0",
-  "description": "Recursive archive tree manifest and guarded recovery with original relative paths.",
+  "version": "0.6.0",
+  "description": "Import complete RAR tree and diagnose native per-file downloads while preserving original paths.",
   "permissions": [
     "downloads",
     "storage"
@@ -25,6 +25,7 @@
       ],
       "js": [
         "common.js",
+        "manifest-model.js",
         "content.js"
       ],
       "css": [
