@@ -11,6 +11,7 @@
   let running = false;
   let stopRequested = false;
   let ledger = {};
+  let pilotPassed = false;
   const waiters = new Map();
   const recent = [];
 
@@ -137,9 +138,8 @@
       " · сохранено: " + completed + " · ошибки: " + failed + (running ? " · ЗАГРУЗКА ИДЁТ" : "");
     const output = contentFor("rr-log");
     if (output) output.textContent = recent.slice(0, 9).join("\n") || "Ожидаю действий.";
-    for (const id of ["rr-test", "rr-batch"]) {
-      if (contentFor(id)) contentFor(id).disabled = !calibration || running;
-    }
+    if (contentFor("rr-test")) contentFor("rr-test").disabled = !calibration || running;
+    if (contentFor("rr-batch")) contentFor("rr-batch").disabled = !calibration || !pilotPassed || running;
     if (contentFor("rr-stop")) contentFor("rr-stop").disabled = !running;
   }
 
@@ -186,7 +186,7 @@
   }
 
   async function saveConfig() {
-    await chrome.storage.local.set({ [CONFIG_KEY]: { folder, calibration } });
+    await chrome.storage.local.set({ [CONFIG_KEY]: { folder, calibration, pilotPassed } });
   }
 
   function teach(event) {
@@ -201,6 +201,7 @@
       log("Разметку ряда определить не удалось. Выбери значок скачивания файла в папке, где есть несколько файлов.");
       return;
     }
+    pilotPassed = false;
     calibration = {
       selector: selectorForRow(match.row),
       trail: match.trail,
@@ -275,8 +276,9 @@
     const seen = new Set();
     log(testOnly ? "Пробная загрузка одного файла." : "Начинаю последовательную загрузку текущей папки.");
     try {
-      const first = rows()[0];
-      if (!first) throw new Error("Файлы не найдены. Открой папку с файлами и повтори обучение.");
+      const currentRows = rows();
+      const first = testOnly ? currentRows.find(row => getName(row) === calibration.sample) : currentRows[0];
+      if (!first) throw new Error(testOnly ? "Образец не виден. Вернись в папку, где выполнялось обучение." : "Файлы не найдены. Открой папку с файлами и повтори обучение.");
       const scroller = findScroller(first);
       if (!testOnly && scroller) scroller.scrollTop = 0;
       let stagnant = 0;
@@ -290,7 +292,14 @@
           seen.add(key);
           fresh++;
           const status = await one(row, 3);
-          if (status === "downloaded") total++;
+          if (status === "downloaded") {
+            total++;
+            if (testOnly) {
+              pilotPassed = true;
+              await saveConfig();
+              log("Пробная загрузка успешна по данным браузера. Теперь доступен запуск очереди.");
+            }
+          }
           if (status === "stopped") break;
           refresh();
           if (testOnly) { stopRequested = true; break; }
@@ -346,6 +355,8 @@
     const saved = values[CONFIG_KEY] || {};
     folder = typeof saved.folder === "string" ? saved.folder : "";
     calibration = saved.calibration && Array.isArray(saved.calibration.trail) ? saved.calibration : null;
+    pilotPassed = Boolean(saved.pilotPassed && calibration);
     ledger = values[LEDGER_KEY] || {};
+    refresh();
   })();
 })();
