@@ -140,7 +140,8 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       const frameId = Number(message.frameId);
       if (!Number.isInteger(frameId) || frameId < 0) throw new Error("Invalid viewer frame");
       const payload = message.payload || {};
-      if (!["RR_SENSOR_LIST", "RR_SENSOR_TRIGGER", "RR_SENSOR_SCROLL"].includes(payload.kind)) {
+      if (!["RR_SENSOR_LIST", "RR_SENSOR_TRIGGER", "RR_SENSOR_SCROLL",
+        "RR_SENSOR_CRAWL_BEGIN", "RR_SENSOR_CRAWL_STEP", "RR_SENSOR_CRAWL_STATUS"].includes(payload.kind)) {
         throw new Error("Unsupported viewer command");
       }
       const result = await chrome.tabs.sendMessage(tabId, payload, { frameId });
@@ -211,7 +212,7 @@ chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
       await saveWatchers();
       await notify(record.tabId, {kind:"RR_STARTED",token:record.token,linkMode:"download"});
     }
-    suggest({ filename: record.target, conflictAction: "overwrite" });
+    suggest({ filename: record.target, conflictAction: "uniquify" });
   })().catch(() => suggest());
   return true;
 });
