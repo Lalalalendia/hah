@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Yandex RAR Rescue",
-  "version": "0.7.0",
-  "description": "Single-request delayed-safe file recovery with complete RAR directory manifest and no blind retries.",
+  "version": "0.8.0",
+  "description": "Verified Yandex RAR archive manifest with a two-file nested path acceptance gate before bulk recovery.",
   "permissions": [
     "downloads",
     "storage"
@@ -26,6 +26,7 @@
       "js": [
         "common.js",
         "manifest-model.js",
+        "recovery-plan.js",
         "content.js"
       ],
       "css": [
