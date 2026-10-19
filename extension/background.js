@@ -169,7 +169,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       const now = Date.now();
       const matches = found.filter(item => {
         const name = String(item.filename || "").replace(/\\/g,"/").split("/").pop();
-        if (name.toLowerCase() !== basename) return false;
+        if (!sameExpectedFile(name,basename)) return false;
         const started = Date.parse(item.startTime || "");
         if (!Number.isFinite(started) || now-started > 4*60*60*1000 || started-now>60000) return false;
         return RarRescueUtils.isDownloadHost(item.url || "") ||
@@ -185,7 +185,8 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
           id:item.id, state:item.state,sourceScheme,
           bytes:Number(item.bytesReceived)||0,
           size:Number(item.totalBytes)||0,
-          savedToRecovery:pathname.toLowerCase().endsWith(expected.toLowerCase()),
+          savedToRecovery:pathname.toLowerCase().endsWith("/"+expected.toLowerCase()),
+          browserRenamed:pathname.split("/").pop().toLowerCase()!==filename.toLowerCase(),
           exists:item.exists !== false,
           sourceHost:host.slice(0,100),
           browserTabMatched:item.tabId === tabId,
