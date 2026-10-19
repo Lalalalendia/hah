@@ -27,10 +27,10 @@ Public file: https://disk.yandex.ru/d/_RSlWomRWmty1w
 ## Install in Yandex Browser / Chrome
 
 1. From the latest successful **RAR Rescue Extension Checks** GitHub Action,
-   download the `rar-rescue-extension-mv3` artifact (there is a second ZIP
-   inside the GitHub artifact; extract **both**).
+   download the `rar-rescue-v02` artifact. **Unzip once**: the unpacked
+   directory contains `manifest.json` directly.
 2. In `browser://extensions` / `chrome://extensions`, enable Developer Mode.
-3. Remove/disable v0.1; use **Load unpacked** and choose the folder containing `manifest.json`.
+3. Remove/disable v0.1; use **Load unpacked** and select the directory containing `manifest.json`.
 4. Allow site access for `disk.yandex.ru`, `docviewer.yandex.ru`,
    and `docviewer.360.yandex.ru` if the browser asks. Reload the Yandex Disk page.
 5. Open the RAR preview and click the extension toolbar icon.
