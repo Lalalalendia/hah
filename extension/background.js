@@ -83,8 +83,8 @@ async function complete(record,status,reason,item){
   delete watchers[String(record.tabId)];
   await saveWatchers();
   await notify(record.tabId,{
-    kind:"RR_RESULT",token:record.token,state:status,reason:ledger[record.key].reason,
-    bytes:ledger[record.key].bytes
+    kind:"RR_RESULT",token:record.token,key:record.key,state:status,
+    reason:ledger[record.key].reason,bytes:ledger[record.key].bytes
   });
 }
 async function completeFromChrome(record,item) {
