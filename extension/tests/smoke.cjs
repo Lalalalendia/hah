@@ -40,6 +40,8 @@ assert(utils.isDownloadHost("https://disk.yandex.ru/x"));
 assert(utils.isDownloadHost("https://docviewer.360.yandex.ru/download/part"));
 assert(utils.isDownloadHost("https://docviewer.yandex.ru/download/part"));
 assert(!utils.isDownloadHost("http://disk.yandex.ru/x"));
+assert(utils.isDownloadHost("blob:https://docviewer.360.yandex.ru/0000-ffff"));
+assert(!utils.isDownloadHost("blob:https://evil.example.com/0000-ffff"));
 assert(!utils.isDownloadHost("https://disk.yandex.ru.attacker.invalid/x"));
 assert(!utils.isDownloadHost("https://example.net/"));
 
