@@ -50,7 +50,7 @@
     if (!action.element) {
       return {ok:false,error:action.error || "button-missing",controls:action.count || 0};
     }
-    if (!message.pilot) {
+    if (!message.pilot && action.mode !== "label") {
       if (!message.approvedMode || message.approvedMode !== action.mode ||
         Number(message.approvedSlots) !== action.slotCount) {
         return {ok:false,error:"action-layout-changed",mode:action.mode,slots:action.slotCount};
