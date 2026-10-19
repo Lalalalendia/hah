@@ -17,10 +17,36 @@
       }).slice(0, 5000);
   }
 
+  function iconEvidence(row) {
+    // The old "contains file-icon" predicate classified folders as files.
+    // Yandex uses a shared file-icon component for more than one item type.
+    const icons = Array.from(row.querySelectorAll(
+      '[class*="file-icon"],[class*="folder"],[class*="directory"],[data-icon],[data-testid]'
+    )).slice(0, 8);
+    const tokens = [...new Set(icons.flatMap(el => [
+      ...Array.from(el.classList || []),
+      el.getAttribute("data-icon") || "",
+      el.getAttribute("data-testid") || "",
+      el.getAttribute("aria-label") || ""
+    ]).filter(Boolean))];
+    const lowered = tokens.join(" ").toLowerCase();
+    const folder = /(?:^|[\\s_-])(?:folder|directory|catalog|dir)(?:$|[\\s_-])/i.test(lowered);
+    // file-icon is a generic widget, not definitive evidence of a file.
+    const typed = tokens.some(t =>
+      /file-icon_(?!size(?:_|$)|folder(?:_|$)|dir(?:_|$)|directory(?:_|$))[a-z0-9_-]+/i.test(t));
+    const explicitlyFile = tokens.some(t =>
+      /(?:^|[\\s_-])(?:file|document|executable|blank)(?:$|[\\s_-])/i.test(t) &&
+      !/^(?:file-icon|file-icon_size(?:_.*)?)$/i.test(t)
+    );
+    return {folder, file:typed || explicitlyFile, tokens:tokens.slice(0, 8)};
+  }
+
   function kindOf(row) {
-    if (row.querySelector('[class*="file-icon"]')) return "file";
-    if (row.querySelector('[class*="folder-icon"],[class*="folderIcon_"]')) return "folder";
-    // Unknown icon must never be downloaded automatically.
+    const evidence=iconEvidence(row);
+    if (evidence.folder) return "folder";
+    if (evidence.file) return "file";
+    // Extensionless files such as DICOMDIR exist. Never guess file/folder
+    // from a dot in the name. Unknown rows remain outside the bulk queue.
     return "unknown";
   }
 
@@ -30,6 +56,7 @@
     return {
       name: norm(row.getAttribute("title")),
       kind: kindOf(row),
+      iconClasses: iconEvidence(row).tokens,
       hasActionBar: Boolean(bar),
       actionCount: controls.length,
       downloadHint: controls.some(c => actionRE.test(labelOf(c)))
@@ -91,6 +118,6 @@
   }
 
   root.RarRescueDOM = Object.freeze({
-    archiveRows, kindOf, itemOf, labelOf, actionOf, rowNamed, scrollerOf
+    archiveRows, kindOf, iconEvidence, itemOf, labelOf, actionOf, rowNamed, scrollerOf
   });
 })(globalThis);
