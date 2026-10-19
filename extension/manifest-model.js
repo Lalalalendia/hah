@@ -14,7 +14,8 @@ function importManifest(raw,utils){
   const srcKeys=Object.keys(srcDirs);
   if(srcKeys.length>1400 || !srcKeys.includes(""))throw new Error("Не найден корень");
   const validSegment=s=>typeof s==="string" && s.length>0 && s.length<=200 &&
-    ![".",".."].includes(s) && !/[/\\\u0000-\u001f]/.test(s);
+    ![".","..","__proto__","prototype","constructor"].includes(s.toLowerCase()) &&
+    !/[/\\\u0000-\u001f]/.test(s);
   function pathToParts(path){
     if(typeof path!=="string")throw new Error("Недопустимый путь");
     if(!path)return [];
@@ -26,8 +27,8 @@ function importManifest(raw,utils){
   const rootNames=new Set(rootList.map(e=>e.name));
   if(!rootNames.has("README.TXT") || !rootNames.has("HELP"))
     throw new Error("Похоже, это карта другого архива");
-  const directories={};
-  const files={};
+  const directories=Object.create(null);
+  const files=Object.create(null);
   const expectedDirs=new Set([""]);
   const mappedWindows=new Map();
   let observed=0;
