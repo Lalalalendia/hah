@@ -339,6 +339,236 @@
     finally {running=false;stopRequested=false;progress="";await countDownloads();render();}
   }
 
+
+  /* Persistent archive manifest. Paths come from the crawler's verified
+   * directory stack, never from a manually entered folder name. */
+  async function saveTree() {
+    if(!tree)return;
+    tree.updatedAt=new Date().toISOString();
+    await chrome.storage.local.set({[TREE_KEY]:tree});
+    render();
+  }
+
+  function newTree() {
+    return {
+      schema:"rar-rescue-tree-v1",
+      archive:"Диск 2.rar",
+      expectedObjects:EXPECTED_OBJECTS,
+      createdAt:new Date().toISOString(),
+      scanned:false,complete:false,observedObjects:0,
+      directories:{},files:{},unknown:[],issues:[]
+    };
+  }
+
+  function storeDirectory(event) {
+    if(!tree || !event || event.event!=="directory")throw new Error("Invalid directory scan event");
+    const path=String(event.path||"");
+    if(Object.prototype.hasOwnProperty.call(tree.directories,path)) {
+      tree.issues.push({path,reason:"duplicate-directory-visit"});
+      return;
+    }
+    const items=event.items||[];
+    tree.directories[path]={
+      path,entries:items.map(i=>({name:i.name,kind:i.kind})),
+      empty:items.length===0,scannedAt:new Date().toISOString()
+    };
+    for(const row of items){
+      const source=(path?path+"/":"")+row.name;
+      if(row.kind==="file") {
+        let destination;
+        try {destination=RarRescueUtils.relative(path,row.name);}
+        catch(error) {
+          tree.issues.push({path:source,reason:"invalid-output-path"});
+          continue;
+        }
+        const previous=tree.files[source];
+        tree.files[source]={
+          sourcePath:source,folder:path,name:row.name,destination,
+          status:previous?.status||"pending",
+          attempts:previous?.attempts||0,
+          bytes:previous?.bytes||0,
+          error:previous?.error||""
+        };
+      } else if(row.kind==="unknown"){
+        tree.unknown.push({path:source,icons:(row.iconClasses||[]).slice(0,6)});
+      }
+    }
+    for(const duplicate of event.duplicates||[]){
+      tree.issues.push({path:(path?path+"/":"")+duplicate,reason:"duplicate-entry-name"});
+    }
+    tree.observedObjects=Number(event.discoveredObjects)||tree.observedObjects;
+  }
+
+  function finalizeTree(event){
+    tree.scanned=true;
+    tree.observedObjects=Number(event.objects)||tree.observedObjects;
+    const reserved=new Map();
+    for(const [source,record] of Object.entries(tree.files)){
+      const dest=record.destination.toLowerCase();
+      if(reserved.has(dest)&&reserved.get(dest)!==source) {
+        tree.issues.push({path:source,reason:"output-name-collision",
+          collidesWith:reserved.get(dest)});
+      } else reserved.set(dest,source);
+    }
+    // Different source folders can normalize to the same Windows path too.
+    const mappedDirs=new Map();
+    for(const path of Object.keys(tree.directories)){
+      if(!path)continue;
+      let target;
+      try {target=RarRescueUtils.relative(path,"_directory_marker_").toLowerCase();}
+      catch(_){tree.issues.push({path,reason:"unsafe-directory-name"});continue;}
+      if(mappedDirs.has(target)&&mappedDirs.get(target)!==path) {
+        tree.issues.push({path,reason:"directory-name-collision",
+          collidesWith:mappedDirs.get(target)});
+      } else mappedDirs.set(target,path);
+    }
+    tree.complete=tree.observedObjects===EXPECTED_OBJECTS &&
+      tree.unknown.length===0 && tree.issues.length===0;
+  }
+
+  async function inventoryTree(){
+    if(running)return;
+    const frame=bestFrame();
+    if(!frame){notice="Открой корень архива и найди файлы.";show(notice);return;}
+    running=true;stopRequested=false;treePhase="inventory";treeFrame=frame.frameId;
+    tree=newTree();await saveTree();
+    notice="Строю дерево папок. Не переключай папки вручную во время обхода.";
+    show(notice);
+    try {
+      let item=await inFrame(frame.frameId,{kind:"RR_SENSOR_CRAWL_BEGIN"});
+      if(!item.ok)throw new Error(item.error||"Не удалось подтвердить корень архива");
+      storeDirectory(item);await saveTree();
+      for(let iteration=0;iteration<EXPECTED_OBJECTS*3 && !stopRequested;iteration++){
+        item=await inFrame(frame.frameId,{kind:"RR_SENSOR_CRAWL_STEP"});
+        if(!item.ok)throw new Error((item.path||"")+" "+(item.error||"Ошибка навигации"));
+        if(item.event==="complete") {
+          finalizeTree(item);
+          await saveTree();
+          notice=tree.complete ?
+            "Все "+EXPECTED_OBJECTS+" объектов учтены. Можно запускать загрузку с исходной структурой." :
+            "Обход завершён, но состав архива не подтверждён полностью. Проверь отчёт: "+
+            tree.observedObjects+"/"+EXPECTED_OBJECTS+", неизвестных: "+
+            tree.unknown.length+", ошибок: "+tree.issues.length+".";
+          show(notice);return;
+        }
+        if(item.event==="directory"){
+          storeDirectory(item);await saveTree();
+          progress="Обход: "+(item.path||"[корень]")+
+            " · объектов: "+tree.observedObjects+"/"+EXPECTED_OBJECTS;
+          render();
+        }
+        if(iteration===EXPECTED_OBJECTS*3-1)throw new Error("Превышен лимит этапов обхода");
+      }
+      notice="Обход прерван. Карта сохранена частично. Для нового запуска вернись в корень RAR.";
+      show(notice);
+    } catch(error) {
+      tree.issues.push({path:"",reason:"crawl-interrupted",detail:String(error.message||error).slice(0,200)});
+      await saveTree();
+      notice="Остановлено: "+error.message+
+        ". Частичная карта сохранена. Вернись в корень архива.";
+      show(notice);
+    } finally {
+      running=false;stopRequested=false;progress="";treePhase="";treeFrame=null;render();
+    }
+  }
+
+  async function recoverTree(){
+    if(running || !approved || !tree || !tree.scanned || !tree.complete)return;
+    const frame=bestFrame();
+    if(!frame||frame.frameId!==approved.frameId)return;
+    running=true;stopRequested=false;treePhase="download";treeFrame=frame.frameId;
+    notice="Скачиваю файлы по исходным относительным путям. Оставь просмотрщик открытым.";
+    show(notice);
+    try {
+      let item=await inFrame(frame.frameId,{kind:"RR_SENSOR_CRAWL_BEGIN"});
+      if(!item.ok)throw new Error(item.error||"Не открыт корень RAR");
+      for(let iteration=0;iteration<EXPECTED_OBJECTS*3 && !stopRequested;iteration++){
+        if(item.event==="directory"){
+          const dir=tree.directories[item.path];
+          if(!dir)throw new Error("Каталог отсутствует в манифесте: "+item.path);
+          const expected=dir.entries.map(v=>v.kind+"|"+v.name).sort();
+          const actual=(item.items||[]).map(v=>v.kind+"|"+v.name).sort();
+          if(JSON.stringify(expected)!==JSON.stringify(actual))
+            throw new Error("Содержимое изменилось: "+(item.path||"[корень]"));
+          for(const entry of item.items||[]){
+            if(stopRequested)break;
+            if(entry.kind!=="file")continue;
+            const original=(item.path?item.path+"/":"")+entry.name;
+            const record=tree.files[original];
+            if(!record)throw new Error("Файл отсутствует в манифесте: "+original);
+            const local=await countDownloads();
+            if(local[keyFor(entry.name,item.path)]?.state==="downloaded") {
+              record.status="downloaded";
+              await saveTree();continue;
+            }
+            progress=original+" · восстановление";render();
+            const result=await retryDownload(frame.frameId,entry.name,false,approved,3,item.path);
+            record.attempts=(record.attempts||0)+1;
+            record.status=result.state==="downloaded"?"downloaded":
+              result.state==="timeout"?"needs-review":"failed";
+            record.bytes=Number(result.bytes)||0;
+            record.error=result.state==="downloaded"?"":String(result.reason||result.state).slice(0,180);
+            await saveTree();
+            if(result.state==="timeout" && result.started){
+              stopRequested=true;
+              notice="Загрузка "+original+" не завершилась. Дальнейшие запросы остановлены.";show(notice);
+            }
+            if(!stopRequested)await sleep(700);
+          }
+        }
+        if(stopRequested)break;
+        item=await inFrame(frame.frameId,{kind:"RR_SENSOR_CRAWL_STEP"});
+        if(!item.ok)throw new Error((item.path||"")+" "+(item.error||"Ошибка перехода"));
+        if(item.event==="complete"){
+          const counts={downloaded:0,failed:0,pending:0,needsReview:0};
+          for(const file of Object.values(tree.files)){
+            if(file.status==="downloaded")counts.downloaded++;
+            else if(file.status==="failed")counts.failed++;
+            else if(file.status==="needs-review")counts.needsReview++;
+            else counts.pending++;
+          }
+          tree.lastRecovery={finishedAt:new Date().toISOString(),counts};
+          await saveTree();
+          notice="Проход завершён. Получено: "+counts.downloaded+
+            ", ошибок: "+counts.failed+", требуют проверки: "+counts.needsReview+
+            ", ещё не обработано: "+counts.pending+
+            ". Скачай JSON-отчёт с путями.";
+          show(notice);
+          return;
+        }
+        if(iteration===EXPECTED_OBJECTS*3-1)throw new Error("Превышен лимит этапов восстановления");
+      }
+      notice="Восстановление остановлено. Уже полученные файлы остаются в каталоге загрузок; вернись в корень для продолжения.";
+      show(notice);
+    } catch(error){
+      tree.issues.push({path:"",reason:"recovery-interrupted",detail:String(error.message||error).slice(0,180)});
+      await saveTree();
+      notice="Восстановление остановлено: "+error.message+
+        ". Подробности в JSON. Не удаляй уже скачанные файлы.";
+      show(notice);
+    } finally {
+      running=false;stopRequested=false;treePhase="";treeFrame=null;progress="";
+      await countDownloads();render();
+    }
+  }
+
+  function exportReport(){
+    if(!tree)return;
+    const data={
+      ...tree,
+      exportedAt:new Date().toISOString(),
+      note:"Browser download completion is not the same as CRC/SHA verified content. Empty directory paths are listed in directories and may require explicit creation."
+    };
+    const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],
+      {type:"application/json;charset=utf-8"}));
+    const anchor=document.createElement("a");
+    anchor.href=url;anchor.download="Disk-2.rar-recovery-report.json";
+    anchor.hidden=true;
+    document.body.append(anchor);anchor.click();anchor.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),12000);
+    show("Скачан отчёт со всеми исходными путями, статусами файлов и пустыми каталогами.");
+  }
+
   async function diagnostics() {
     const report={
       tool:"RAR Rescue v0.5",
