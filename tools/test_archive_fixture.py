@@ -13,7 +13,7 @@ HTML = """<!doctype html><html><head><title>Fixture</title></head><body>
 <div id="app"><div class="embed-slider"><div class="archive_YiC4SRUb2YA4rmP8">
 <div class="leftPanel_s9SuwM_e_BsDqlxW"><div class="listing_c7puEm5nLuMUpHxl">
 <div title="JRE" class="resourceItem_UW3xqn78_GQsvOky listingItem_OfYVDJLU7x0vOvQS">
-  <span class="folderIcon_Yi"></span><span>JRE</span></div>
+  <span class="file-icon file-icon_size_s file-icon_folder"></span><span>JRE</span></div>
 <div title="README.TXT" class="resourceItem_UW3xqn78_GQsvOky listingItem_OfYVDJLU7x0vOvQS">
   <span class="file-icon file-icon_size_s file-icon_txt"></span>
   <span class="resourceItemName_dNRxyCHXTFYiG9Ou">README.TXT</span>
@@ -74,6 +74,13 @@ try:
        null,(response)=>cb(response));
     """)
     assert second["ok"] and second["mode"] == "label",second
+    assert drv.execute_script("return window.__events") == ["README.TXT","INDEX.HTM"]
+    inspected=drv.execute_async_script("""
+      const cb=arguments[arguments.length-1];
+      window.__rrListener({kind:'RR_SENSOR_TRIGGER',name:'README.TXT',
+       pilot:true,inspectOnly:true},null,(response)=>cb(response));
+    """)
+    assert inspected["ok"] and inspected["inspected"] and not inspected["clicked"],inspected
     assert drv.execute_script("return window.__events") == ["README.TXT","INDEX.HTM"]
     denied=drv.execute_async_script("""
       const cb=arguments[arguments.length-1];
