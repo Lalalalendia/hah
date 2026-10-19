@@ -26,6 +26,7 @@
       return u.protocol === "https:" && (
         u.hostname === "disk.yandex.ru" ||
         u.hostname === "docviewer.yandex.ru" ||
+        u.hostname === "docviewer.360.yandex.ru" ||
         u.hostname.endsWith(".disk.yandex.ru") ||
         u.hostname.endsWith(".disk.yandex.net") ||
         u.hostname === "downloader.yandex.ru" ||
