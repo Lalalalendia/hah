@@ -1,14 +1,16 @@
 {
   "manifest_version": 3,
-  "name": "Yandex RAR Rescue (experimental)",
-  "version": "0.1.0",
-  "description": "Download individual files from Yandex Disk archive preview with retries and local progress tracking.",
+  "name": "Yandex RAR Rescue",
+  "version": "0.2.0",
+  "description": "Diagnose archive viewer frames and recover individual files with a local progress journal.",
   "permissions": [
     "downloads",
     "storage"
   ],
   "host_permissions": [
-    "https://disk.yandex.ru/*"
+    "https://disk.yandex.ru/*",
+    "https://docviewer.yandex.ru/*",
+    "https://docviewer.360.yandex.ru/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -28,7 +30,21 @@
       "css": [
         "panel.css"
       ],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://disk.yandex.ru/*",
+        "https://docviewer.yandex.ru/*",
+        "https://docviewer.360.yandex.ru/*"
+      ],
+      "js": [
+        "frame-sensor.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
     }
   ]
 }
