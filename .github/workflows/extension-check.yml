@@ -3,6 +3,7 @@ on:
   push:
     paths:
       - "extension/**"
+      - "tools/test_archive_fixture.py"
       - ".github/workflows/extension-check.yml"
   pull_request:
     paths:
@@ -30,6 +31,10 @@ jobs:
         run: |
           node extension/tests/smoke.cjs
           node extension/tests/dom-smoke.cjs
+      - name: Chromium archive DOM integration fixture
+        run: |
+          python -m pip install -q selenium
+          python tools/test_archive_fixture.py
       - name: Upload ready-to-install extension directory
         uses: actions/upload-artifact@v4
         with:
