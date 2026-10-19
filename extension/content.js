@@ -77,8 +77,6 @@
     if (el("rr-scan")) el("rr-scan").disabled = running;
     if (el("rr-pilot")) el("rr-pilot").disabled = running || !best;
     if (el("rr-check")) el("rr-check").disabled = running || !best;
-    if (el("rr-batch")) el("rr-batch").disabled = running || !approved || !best ||
-      approved.frameId !== best.frameId;
     if (el("rr-stop")) el("rr-stop").disabled = !running;
     if (el("rr-inventory")) el("rr-inventory").disabled = running || !bestFrame();
     if (el("rr-recover")) el("rr-recover").disabled = running || !bestFrame() ||
@@ -113,7 +111,6 @@
     el("rr-scan").addEventListener("click",()=>{void scan();});
     el("rr-check").addEventListener("click",()=>{void inspectReadme();});
     el("rr-pilot").addEventListener("click",()=>{void pilot();});
-    el("rr-batch")?.addEventListener("click",()=>{void batch();});
     el("rr-inventory").addEventListener("click",()=>{void inventoryTree();});
     el("rr-recover").addEventListener("click",()=>{void recoverTree();});
     el("rr-report").addEventListener("click",()=>{exportReport();});
@@ -301,47 +298,6 @@
     } catch(error) {notice="Ошибка теста: "+error.message;show(notice);}
     finally {running=false;progress="";render();}
   }
-
-  async function batch() {
-    if (running || !approved) return;
-    const frame=bestFrame();
-    if (!frame || frame.frameId!==approved.frameId) return;
-    try {folder=folderValue();}
-    catch(error) {notice=error.message;render();return;}
-    running=true;stopRequested=false;render();
-    const seen=new Set();
-    let ok=0,errors=0,skipped=0;
-    try {
-      await inFrame(frame.frameId,{kind:"RR_SENSOR_SCROLL",reset:true});
-      await sleep(350);
-      for(let page=0;page<250&&!stopRequested;page++) {
-        const roster=await inFrame(frame.frameId,{kind:"RR_SENSOR_LIST"});
-        const files=(roster.items||[]).filter(x=>x.kind==="file");
-        let newCount=0;
-        for(const file of files) {
-          if(stopRequested) break;
-          const key=keyFor(file.name);
-          if(seen.has(key)) continue;
-          seen.add(key);newCount++;
-          const existing=await countDownloads();
-          if(existing[key]?.state==="downloaded") {skipped++;continue;}
-          const result=await retryDownload(frame.frameId,file.name,false,approved,3);
-          if(result.state==="downloaded") ok++;
-          else {errors++;if(result.state==="timeout" && result.started)stopRequested=true;}
-          render();
-          await sleep(900);
-        }
-        if(stopRequested)break;
-        const next=await inFrame(frame.frameId,{kind:"RR_SENSOR_SCROLL"});
-        if(!next.scrollable || next.atEnd || (newCount===0 && page>1)) break;
-        await sleep(600);
-      }
-      notice="Проход завершён: "+ok+" получено, "+errors+" ошибок, "+skipped+" уже скачаны. Это только текущая папка.";
-      show(notice);
-    } catch(error) {notice="Очередь прервана: "+error.message;show(notice);}
-    finally {running=false;stopRequested=false;progress="";await countDownloads();render();}
-  }
-
 
   /* Persistent archive manifest. Paths come from the crawler's verified
    * directory stack, never from a manually entered folder name. */
