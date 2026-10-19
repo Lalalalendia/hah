@@ -4,6 +4,7 @@ const path=require("node:path");
 const vm=require("node:vm");
 const root=path.resolve(__dirname,"..");
 let handler;
+let filenameHandler;
 const registrations=()=>({addListener(fn){handler=fn;}});
 const recentTime=new Date(Date.now()-60*1000).toISOString();
 const downloads=[
@@ -35,7 +36,7 @@ const chrome={
     search:async()=>downloads,
     onCreated:{addListener(){}},
     onChanged:{addListener(){}},
-    onDeterminingFilename:{addListener(){}}
+    onDeterminingFilename:{addListener(fn){filenameHandler=fn;}}
   }
 };
 const scope={chrome,URL,setTimeout,clearTimeout};
@@ -67,5 +68,24 @@ function dispatch(message) {
   const y=await dispatch({kind:"RR_INSPECT_DOWNLOADS",filename:"README.TXT",folder:"HELP"});
   assert(y.ok);
   assert(y.matches.every(v=>v.savedToRecovery===false));
-  console.log("OK: browser download history uses exact name, correct recovery path, and hides signed URLs");
+  const arm=await dispatch({
+    kind:"RR_ARM",token:"nested-test",key:"Disk-2.rar/HELP/SUB/NESTED.JSON",
+    folder:"HELP/SUB",filename:"NESTED.JSON"
+  });
+  assert(arm.ok,JSON.stringify(arm));
+  const suggestion=await new Promise((resolve,reject)=>{
+    const handled=filenameHandler({
+      id:998,tabId:10,
+      url:"https://downloader.disk.yandex.ru/disk/item?token=DO_NOT_LEAK"
+    },resolve);
+    assert.equal(handled,true);
+    setTimeout(()=>reject(new Error("No filename suggestion")),1500).unref();
+  });
+  assert.equal(suggestion.filename,
+    "YandexRARRecovery/Disk-2.rar/HELP/SUB/NESTED.JSON");
+  assert.equal(suggestion.conflictAction,"uniquify");
+  assert(!JSON.stringify(suggestion).includes("DO_NOT_LEAK"));
+  const release=await dispatch({kind:"RR_RELEASE",token:"nested-test"});
+  assert(release.ok);
+  console.log("OK: nested Windows download paths, safe non-overwrite policy and sanitized history");
 })().catch(e=>{console.error(e);process.exitCode=1;});
