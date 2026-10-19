@@ -3,6 +3,7 @@
 (() => {
   "use strict";
   const LEDGER_KEY = "rr_ledger";
+  const NESTED_PILOT_LIMIT = 2;
   const TREE_KEY = "rr_tree_v05";
   const EXPECTED_OBJECTS = 1286;
   const ARCHIVE = "Disk-2.rar";
@@ -15,6 +16,8 @@
   let lastInspection = [];
   let nativeVerified = false;
   let lastAutoCommand = null;
+  let ledgerSnapshot = {};
+  let nestedPilotPlan = null;
   let tree = null;
   let treePhase = "";
   let treeFrame = null;
@@ -42,6 +45,7 @@
   const keyFor = (name, subfolder=folder) => ARCHIVE + "/" + (subfolder ? subfolder + "/" : "") + name;
   async function countDownloads() {
     const state = (await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY] || {};
+    ledgerSnapshot = state;
     downloaded = Object.values(state).filter(x=>x.state==="downloaded").length;
     failed = Object.values(state).filter(x=>x.state==="failed").length;
     return state;
@@ -81,8 +85,20 @@
     if (el("rr-check")) el("rr-check").disabled = running || !best;
     if (el("rr-stop")) el("rr-stop").disabled = !running;
     if (el("rr-inventory")) el("rr-inventory").disabled = running || !bestFrame();
+    if (el("rr-nested")) el("rr-nested").disabled = running || !bestFrame() ||
+      !approved || !tree?.complete || approved.frameId !== bestFrame().frameId ||
+      tree?.nestedPilot?.passed===true;
+    if (el("rr-nested-plan")) {
+      const plan = tree?.complete ? RarRescuePlan.selectTwo(tree,ledgerSnapshot) : null;
+      el("rr-nested-plan").textContent = tree?.nestedPilot?.passed ?
+        "Приёмка вложенных путей завершена: " + tree.nestedPilot.files.join(" | ") :
+        plan?.ok ? "Будут проверены: "+plan.files.map(x=>x.sourcePath).join(" | ")+
+          (plan.sameBasename?" (одинаковые имена)":" (разные папки)") :
+        plan?.error ? "Подбор вложенных файлов: "+plan.error : "";
+    }
     if (el("rr-recover")) el("rr-recover").disabled = running || !bestFrame() ||
       !approved || !tree || !tree.scanned || !tree.complete ||
+      tree.nestedPilot?.passed !== true ||
       approved.frameId !== bestFrame().frameId;
     if (el("rr-report")) el("rr-report").disabled = !tree;
     if (el("rr-native")) el("rr-native").disabled = running || !best;
@@ -95,7 +111,7 @@
     panel=document.createElement("section");
     panel.id="rr-recovery-panel";
     panel.innerHTML = [
-      '<header><strong>RAR Rescue v0.7</strong><button id="rr-close" title="Закрыть">×</button></header>',
+      '<header><strong>RAR Rescue v0.8</strong><button id="rr-close" title="Закрыть">×</button></header>',
       '<p>Диск 2.rar — 1286 объектов, включая папки. Полное восстановление сохраняет пути и ведёт журнал.</p>',
       '<div class="rr-actions"><button id="rr-scan">1. Найти файлы</button><button id="rr-check">2. Учесть скачанный README</button></div>',
       '<div class="rr-actions"><button id="rr-native">3. Нативный тест README</button></div>',
@@ -103,14 +119,16 @@
       '<p id="rr-status" role="status"></p><p id="rr-found"></p>',
       '<label>Путь открытой папки внутри архива (в корне оставь пустым)<input id="rr-folder" type="text" placeholder="например, HELP" autocomplete="off"></label>',
       '<div class="rr-actions"><button id="rr-inventory">4. Обойти все папки</button><button id="rr-stop">Остановить</button></div>',
-      '<div class="rr-actions"><button id="rr-recover">5. Скачать всё со структурой</button><button id="rr-report">Отчёт JSON</button></div>',
+      '<div class="rr-actions"><button id="rr-nested">5. Проверить 2 вложенных файла</button></div>',
+      '<p id="rr-nested-plan"></p>',
+      '<div class="rr-actions"><button id="rr-recover">6. Скачать всё со структурой</button><button id="rr-report">Отчёт JSON</button></div>',
       '<div class="rr-actions"><button id="rr-import">Импортировать карту JSON</button><input id="rr-import-input" type="file" accept=".json,application/json" style="display:none"></div>',
       '<div class="rr-actions"><button id="rr-empty">Создать пустые каталоги</button></div>',
       '<p id="rr-tree"></p>',
       '<p id="rr-progress" role="status"></p>',
       '<div class="rr-actions"><button id="rr-copy">Скопировать диагностику</button></div>',
       '<pre id="rr-log"></pre>',
-      '<small>Карта из отчёта v0.5 импортируется без повторного обхода. Нативный тест: после запуска сам нажми «Скачать» рядом с README.TXT в просмотрщике. Он проверяет перехват загрузок, но не открывает массовую очередь. Для неё нужен отдельно подтверждённый автоматический клик. Файлы не запускаются.</small>'
+      '<small>После корневого автотеста проверь два файла в разных вложенных папках. Путь вычисляется автоматически из манифеста, а результат проверяется по точному пути браузерной загрузки. Только после успешной двойной проверки доступна полная очередь. Файлы не запускаются.</small>'
     ].join("");
     document.body.append(panel);
     el("rr-close").addEventListener("click",()=>{panel.remove();panel=null;});
@@ -119,6 +137,7 @@
     el("rr-pilot").addEventListener("click",()=>{void pilot();});
     el("rr-native").addEventListener("click",()=>{void nativePilot();});
     el("rr-inventory").addEventListener("click",()=>{void inventoryTree();});
+    el("rr-nested").addEventListener("click",()=>{void acceptNestedPaths();});
     el("rr-recover").addEventListener("click",()=>{void recoverTree();});
     el("rr-report").addEventListener("click",()=>{exportReport();});
     el("rr-import").addEventListener("click",()=>el("rr-import-input").click());
@@ -279,7 +298,7 @@
       await send({kind:"RR_ARM",token,key,folder:subfolder,filename:name});
       armed=true;
       action=await inFrame(frameId,{
-        kind:"RR_SENSOR_TRIGGER",name,pilot:pilotMode,
+        kind:"RR_SENSOR_TRIGGER",name,pilot:pilotMode,allowLocate:Boolean(subfolder),
         approvedMode:approvedMode?.mode||null,
         approvedSlots:approvedMode?.slots??null
       });
@@ -540,7 +559,8 @@
   }
 
   async function recoverTree(){
-    if(running || !approved || !tree || !tree.scanned || !tree.complete)return;
+    if(running || !approved || !tree || !tree.scanned || !tree.complete ||
+      tree.nestedPilot?.passed!==true)return;
     const frame=bestFrame();
     if(!frame||frame.frameId!==approved.frameId)return;
     running=true;stopRequested=false;treePhase="download";treeFrame=frame.frameId;
@@ -703,6 +723,7 @@
       nativeVerified,
       lastAutoCommand,
       lastInspection,
+      nestedPilot:tree?.nestedPilot||null,
       treeSummary: tree ? {scanned:tree.scanned,complete:tree.complete,objects:tree.observedObjects,
         directories:Object.keys(tree.directories||{}).length,files:Object.keys(tree.files||{}).length,
         issues:(tree.issues||[]).slice(0,10),unknown:(tree.unknown||[]).slice(0,10)} : null,
