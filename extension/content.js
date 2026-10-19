@@ -337,50 +337,44 @@
     if(running)return;
     const frame=bestFrame();
     if(!frame){notice="Сначала найди файлы в корне.";show(notice);return;}
-    let target;
     try {
       folder=folderValue();
-      if(folder)throw new Error("Для теста README открой корень архива и оставь поле пути пустым.");
-      target=await choosePilot(frame);
-      if(!target || target.name!=="README.TXT")throw new Error("README.TXT не найден в корне.");
+      if(folder)throw new Error("Для теста README открой корень и оставь поле пути пустым.");
+      const target=await choosePilot(frame);
+      if(!target || target.name!=="README.TXT")throw new Error("README.TXT не найден.");
     }catch(error){notice=String(error.message||error);show(notice);return;}
     running=true;stopRequested=false;nativeVerified=false;render();
     const token=String(Date.now())+"-"+Math.random().toString(36).slice(2);
-    let resolver;
-    const waiting=new Promise(resolve=>resolver=resolve);
-    pending={token,started:false,resolve:resolver,timer:null};
+    const key=keyFor("README.TXT","");
+    let armed=false;
+    const waiting=createPending(token,key);
     try {
-      await send({kind:"RR_ARM",token,key:keyFor("README.TXT",""),
-        folder:"",filename:"README.TXT"});
-      pending.timer=setTimeout(()=>{
-        if(pending&&pending.token===token)clearPending({
-          state:"timeout",reason:"No native browser download after 75 seconds"
-        });
-      },75000);
-      notice="ОЖИДАЮ ТВОЙ КЛИК: наведи курсор на README.TXT СЛЕВА и нажми кнопку «Скачать» самого Яндекса. Не жми кнопку в шапке RAR.";
+      await send({kind:"RR_ARM",token,key,folder:"",filename:"README.TXT"});
+      armed=true;
+      notice="Нажми штатную кнопку «Скачать» у README.TXT только ОДИН раз. Жди результата: до 8 минут на начало загрузки. Повторно не нажимай.";
       show(notice);
       const result=await waiting;
-      if(result.state==="timeout"){
-        await send({kind:"RR_RELEASE",token}).catch(()=>{});
+      if(result.state!=="downloaded") {
+        await send({kind:"RR_MARK_UNKNOWN",token}).catch(()=>{});
         const recent=await send({kind:"RR_INSPECT_DOWNLOADS",filename:"README.TXT",folder:""});
         lastInspection=recent.matches||[];
       }
       if(result.state==="downloaded"){
         nativeVerified=true;
-        notice="Нативная загрузка README учтена: "+(result.bytes||0)+
-          " байт в папке восстановления. Теперь нужно проверить автоматический режим отдельно.";
+        notice="Нативная загрузка завершена: "+(result.bytes||0)+
+          " байт. Для массовой очереди нужно отдельно подтвердить автоматический режим.";
       }else{
-        notice="Нативная загрузка не учтена: "+String(result.reason||result.state)+
-          ". Проверь свежие записи в диагностике (без исходных URL).";
+        notice="Исход нативной загрузки не подтверждён. Новые клики блокируются, чтобы не создавать дубли. "+String(result.reason||result.state);
       }
       await countDownloads();
       show(notice);
     }catch(error){
-      await send({kind:"RR_RELEASE",token}).catch(()=>{});
-      if(pending?.token===token)clearPending({state:"failed",reason:String(error.message||error)});
-      notice="Ошибка проверки: "+String(error.message||error);show(notice);
+      if(armed)await send({kind:"RR_MARK_UNKNOWN",token}).catch(()=>{});
+      clearPending({state:"needs-review",reason:String(error.message||error)});
+      notice="Не удалось проверить загрузку: "+String(error.message||error);show(notice);
     }finally{running=false;progress="";render();}
   }
+
 
   async function importTreeFile(file){
     if(running)return;
