@@ -15,12 +15,15 @@ async function saveWatchers() {
 
 function pageAllowed(sender) {
   if (!sender || !sender.tab || !Number.isInteger(sender.tab.id)) return false;
-  try { return new URL(sender.url || sender.tab.url).hostname === "disk.yandex.ru"; }
+  try { const topHost = new URL(sender.tab.url).hostname;
+    const frameHost = new URL(sender.url || sender.tab.url).hostname;
+    return topHost === "disk.yandex.ru" &&
+      ["disk.yandex.ru", "docviewer.yandex.ru", "docviewer.360.yandex.ru"].includes(frameHost); }
   catch (_) { return false; }
 }
 
 async function notify(tabId, payload) {
-  try { await chrome.tabs.sendMessage(tabId, payload); }
+  try { await chrome.tabs.sendMessage(tabId, payload, { frameId: 0 }); }
   catch (_) { /* Page was navigated or closed; ledger still survives. */ }
 }
 
@@ -49,7 +52,7 @@ async function complete(record, status, reason, item) {
 
 chrome.action.onClicked.addListener(async tab => {
   if (!tab || !tab.id || !tab.url || !tab.url.startsWith("https://disk.yandex.ru/")) return;
-  try { await chrome.tabs.sendMessage(tab.id, { kind: "RR_TOGGLE" }); }
+  try { await chrome.tabs.sendMessage(tab.id, { kind: "RR_TOGGLE" }, { frameId: 0 }); }
   catch (_) { /* Content script not yet loaded. */ }
 });
 
@@ -59,7 +62,33 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     await ready;
     if (!pageAllowed(sender)) throw new Error("Not a Yandex Disk tab");
     const tabId = sender.tab.id;
+    if (message.kind === "RR_SENSOR_REPORT" || message.kind === "RR_SENSOR_PICKED") {
+      const allowed = message.kind === "RR_SENSOR_REPORT" ?
+        ["kind", "requestId", "host", "top", "names", "count", "archiveMarker", "frames", "knownReadme"] :
+        ["kind", "host", "found", "name", "ancestry", "clickedTag", "count"];
+      const sanitized = {};
+      for (const field of allowed) if (Object.prototype.hasOwnProperty.call(message, field)) sanitized[field] = message[field];
+      sanitized.frameId = sender.frameId;
+      await notify(tabId, sanitized);
+      respond({ ok: true });
+      return;
+    }
+    if (message.kind === "RR_SCAN_FRAMES") {
+      if (sender.frameId !== 0) throw new Error("Only the top-level panel can scan");
+      const id = String(message.requestId || "").slice(0, 80);
+      await chrome.tabs.sendMessage(tabId, { kind: "RR_SENSOR_SCAN", requestId: id });
+      respond({ ok: true });
+      return;
+    }
+    if (message.kind === "RR_PICK_FILE" || message.kind === "RR_STOP_PICK") {
+      if (sender.frameId !== 0) throw new Error("Only the top-level panel can pick");
+      const kind = message.kind === "RR_PICK_FILE" ? "RR_SENSOR_START_PICK" : "RR_SENSOR_STOP_PICK";
+      await chrome.tabs.sendMessage(tabId, { kind });
+      respond({ ok: true });
+      return;
+    }
     if (message.kind === "RR_ARM") {
+      if (sender.frameId !== 0) throw new Error("Only the top-level panel can arm a download");
       const token = String(message.token || "").slice(0, 80);
       const key = String(message.key || "").slice(0, 500);
       const filename = String(message.filename || "");
