@@ -21,14 +21,18 @@ jobs:
         run: |
           node --check extension/common.js
           node --check extension/content.js
+          node --check extension/archive-dom.js
           node --check extension/frame-sensor.js
+          node --check extension/tests/dom-smoke.cjs
           node --check extension/background.js
           node --check extension/tests/smoke.cjs
       - name: Security and manifest smoke tests
-        run: node extension/tests/smoke.cjs
+        run: |
+          node extension/tests/smoke.cjs
+          node extension/tests/dom-smoke.cjs
       - name: Upload ready-to-install extension directory
         uses: actions/upload-artifact@v4
         with:
-          name: rar-rescue-v02
+          name: rar-rescue-v03
           path: extension/
           retention-days: 7
