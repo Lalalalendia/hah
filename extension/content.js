@@ -1,260 +1,285 @@
-/* Yandex RAR Rescue v0.2. Main-frame panel; read-only sensors live in docviewer frames. */
+/* Main-frame controller for Yandex RAR Rescue v0.3.
+   Never reads account cookies, document payloads or signed download URLs. */
 (() => {
   "use strict";
-  const CONFIG_KEY = "rr_v02_config";
   const LEDGER_KEY = "rr_ledger";
   const ARCHIVE = "Disk-2.rar";
-  let panel = null;
-  let folder = "";
-  let picked = null;
-  let scanning = false;
-  let isPicking = false;
-  let awaiting = null;
-  let downloaded = 0;
-  let failed = 0;
-  let frames = new Map();
-  let scanId = "";
-  let events = [];
-  let selectedSummary = "";
-  let notice = "Расширение ещё не проверило содержимое просмотрщика.";
+  const sleep = ms => new Promise(resolve => setTimeout(resolve,ms));
+  let panel = null, folder = "", frames = new Map(), scanId = "", scanning = false;
+  let approved = null, pending = null, running = false, stopRequested = false;
+  let events = [], downloaded = 0, failed = 0;
+  let notice = "Используем названия файлов и кнопки на скриншотах DevTools.";
+  let progress = "";
 
-  const send = async data => {
-    try {
-      const response = await chrome.runtime.sendMessage(data);
-      if (!response || !response.ok) throw new Error(response?.error || "Нет ответа расширения");
-      return response;
-    } catch (error) { throw new Error(String(error.message || error)); }
-  };
-  const el = id => panel && panel.querySelector("#" + id);
-  function note(str) {
-    events.unshift(new Date().toLocaleTimeString() + " " + str);
-    events = events.slice(0, 30);
+  function show(message) {
+    events.unshift(new Date().toLocaleTimeString() + " " + message);
+    events = events.slice(0,30);
     render();
   }
-  function cleanPath(value) {
-    const parts = String(value || "").replace(/\\/g, "/").split("/");
-    if (parts.some(p => p === ".." || p.startsWith("~"))) throw new Error("Недопустимый путь: .. или ~");
+  const el = id => panel && panel.querySelector("#"+id);
+  async function send(message) {
+    const response = await chrome.runtime.sendMessage(message);
+    if (!response || !response.ok) throw new Error(response?.error || "Расширение не ответило");
+    return response;
+  }
+  async function inFrame(id,payload) {
+    return send({kind:"RR_FRAME_CALL",frameId:id,payload});
+  }
+  function folderValue() {
+    const value = String(el("rr-folder")?.value || "").trim().replace(/\\/g,"/");
+    const parts = value.split("/");
+    if (parts.some(p => p === ".." || p.startsWith("~"))) throw new Error("Недопустимый путь");
     return parts.filter(p => p && p !== ".").join("/");
   }
-  async function persist() {
-    await chrome.storage.local.set({ [CONFIG_KEY]: { folder } });
+  const keyFor = name => ARCHIVE + "/" + (folder ? folder + "/" : "") + name;
+  async function countDownloads() {
+    const state = (await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY] || {};
+    downloaded = Object.values(state).filter(x=>x.state==="downloaded").length;
+    failed = Object.values(state).filter(x=>x.state==="failed").length;
+    return state;
   }
-  async function updateLedger() {
-    const l = (await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY] || {};
-    downloaded = Object.values(l).filter(x => x.state === "downloaded").length;
-    failed = Object.values(l).filter(x => x.state === "failed").length;
-    render();
+  function bestFrame() {
+    const sorted = [...frames.values()].filter(x => x.count > 0)
+      .sort((a,b) => b.count - a.count);
+    return sorted[0] || null;
   }
   function render() {
     if (!panel) return;
-    const snapshots = [...frames.values()].sort((a, b) => Number(b.count || 0) - Number(a.count || 0));
-    const populated = snapshots.filter(x => x.count > 0);
-    const sum = populated.reduce((n, x) => n + Number(x.count || 0), 0);
-    const statuses = el("rr-status");
-    if (statuses) {
-      statuses.textContent =
-        (scanning ? "Сканирование... " : "") +
-        (snapshots.length ?
-          ("Обнаружено кадров: " + snapshots.length + ", имён файлов в DOM: " + sum +
-            (populated.length ? " (доступен " + populated[0].host + ")" : " (список ещё не доступен)")) :
-          "Кадры не ответили: проверь разрешения docviewer.yandex.ru и docviewer.360.yandex.ru");
-    }
-    const sample = snapshots.filter(x => x.count > 0).flatMap(x => x.names || []).slice(0, 8);
-    if (el("rr-found")) el("rr-found").textContent = sample.length ? "На экране: " + sample.join(", ") : "Имена файлов пока не обнаружены.";
-    if (el("rr-selected")) el("rr-selected").textContent = picked ?
-      "Выбран " + picked.name + " · кадр " + picked.host + " · frame #" + picked.frameId :
-      "Файл ещё не выбран.";
-    if (el("rr-notice")) el("rr-notice").textContent = notice +
-      " · сохранено: " + downloaded + ", ошибок: " + failed;
-    if (el("rr-log")) el("rr-log").textContent = events.slice(0, 8).join("\n") || "Ожидаю действия.";
-    if (el("rr-try")) el("rr-try").disabled = !picked || Boolean(awaiting);
-    if (el("rr-pick")) el("rr-pick").disabled = isPicking || Boolean(awaiting);
-    if (el("rr-stop")) el("rr-stop").disabled = !awaiting && !isPicking;
+    const entries = [...frames.values()];
+    const candidateFiles = bestFrame()?.count || 0;
+    const candidateFolders = bestFrame()?.folders || 0;
+    const candidateUnknown = bestFrame()?.unknown || 0;
+    const best = bestFrame();
+    if (el("rr-status")) el("rr-status").textContent = scanning ?
+      "Сканирование кадров браузера..." :
+      (best ? ("Файлов: "+candidateFiles+" · папок: "+candidateFolders+" · неопределённых: "+candidateUnknown+
+        " · источник: "+best.host) :
+      ("Файлы не обнаружены. Ответили кадров: "+entries.length));
+    if (el("rr-found")) el("rr-found").textContent = best ?
+      "Примеры: "+(best.names || []).slice(0,10).join(", ") :
+      "Нужно открыть содержимое Диск 2.rar и нажать «Найти файлы».";
+    if (el("rr-progress")) el("rr-progress").textContent = (progress ? progress+" · " : "") +
+      notice+" · успешно: "+downloaded+", ошибки: "+failed;
+    if (el("rr-log")) el("rr-log").textContent = events.slice(0,9).join("\n") || "Ожидаю проверки.";
+    if (el("rr-scan")) el("rr-scan").disabled = running;
+    if (el("rr-pilot")) el("rr-pilot").disabled = running || !best;
+    if (el("rr-batch")) el("rr-batch").disabled = running || !approved || !best ||
+      approved.frameId !== best.frameId;
+    if (el("rr-stop")) el("rr-stop").disabled = !running;
   }
 
   function mount() {
-    if (panel) { panel.remove(); panel = null; return; }
-    panel = document.createElement("section");
-    panel.id = "rr-recovery-panel";
+    if (panel) { panel.remove(); panel=null; return; }
+    panel=document.createElement("section");
+    panel.id="rr-recovery-panel";
     panel.innerHTML = [
-      '<header><strong>RAR Rescue v0.2</strong><button id="rr-close" title="Закрыть панель">×</button></header>',
-      '<p>Диск 2.rar — 1286 объектов (файлы + каталоги). Сначала проверяем доступ к просмотрщику.</p>',
-      '<div class="rr-actions"><button id="rr-scan">1. Найти файлы</button><button id="rr-pick">2. Выбрать файл</button></div>',
+      '<header><strong>RAR Rescue v0.3</strong><button id="rr-close" title="Закрыть">×</button></header>',
+      '<p>Диск 2.rar — 1286 объектов, включая папки. Ручное обучение больше не требуется.</p>',
+      '<div class="rr-actions"><button id="rr-scan">1. Найти файлы</button><button id="rr-pilot">2. Проверить README.TXT</button></div>',
       '<p id="rr-status" role="status"></p><p id="rr-found"></p>',
-      '<p id="rr-selected"></p>',
-      '<label>Путь внутри архива (корень — оставить пустым)<input id="rr-folder" type="text" placeholder="например, HELP" autocomplete="off"></label>',
-      '<div class="rr-actions"><button id="rr-try">3. Отследить скачивание</button><button id="rr-stop">Отмена ожидания</button></div>',
-      '<p id="rr-notice" role="status"></p>',
-      '<div class="rr-actions"><button id="rr-copy">Копировать диагностику</button></div>',
+      '<label>Путь открытой папки внутри архива (в корне оставь пустым)<input id="rr-folder" type="text" placeholder="например, HELP" autocomplete="off"></label>',
+      '<div class="rr-actions"><button id="rr-batch">3. Скачать текущую папку</button><button id="rr-stop">Остановить</button></div>',
+      '<p id="rr-progress" role="status"></p>',
+      '<div class="rr-actions"><button id="rr-copy">Скопировать диагностику</button></div>',
       '<pre id="rr-log"></pre>',
-      '<small>После выбора файла нажми «Отследить скачивание», затем в просмотрщике Яндекса наведи курсор на этот файл и нажми появившийся значок «Скачать». Никакие EXE/скрипты не запускаются. Автоматическую очередь включим после подтверждения первого скачивания.</small>'
+      '<small>Тест нажимает кнопку скачивания внутри строки README.TXT, а не кнопку исходного RAR в заголовке. Очередь включится только после подтверждённой браузером пробной загрузки. EXE/CMD не запускаются.</small>'
     ].join("");
     document.body.append(panel);
-    if (el("rr-folder")) el("rr-folder").value = folder;
-    el("rr-close").addEventListener("click", () => { panel.remove(); panel = null; });
-    el("rr-folder").addEventListener("change", async e => {
-      try {
-        folder = cleanPath(e.target.value);
-        e.target.value = folder;
-        await persist();
-        note("Путь: " + (folder || "[корень]"));
-      } catch (err) { notice = err.message; render(); }
-    });
-    el("rr-scan").addEventListener("click", () => { void scan(); });
-    el("rr-pick").addEventListener("click", () => { void startPick(); });
-    el("rr-try").addEventListener("click", () => { void startDownloadWatch(); });
-    el("rr-stop").addEventListener("click", () => { void stop(); });
-    el("rr-copy").addEventListener("click", () => { void copyReport(); });
+    el("rr-close").addEventListener("click",()=>{panel.remove();panel=null;});
+    el("rr-scan").addEventListener("click",()=>{void scan();});
+    el("rr-pilot").addEventListener("click",()=>{void pilot();});
+    el("rr-batch").addEventListener("click",()=>{void batch();});
+    el("rr-stop").addEventListener("click",()=>{stopRequested=true;show("Остановить после текущего файла.");});
+    el("rr-copy").addEventListener("click",()=>{void diagnostics();});
+    el("rr-folder").addEventListener("change",()=>{approved=null;render();});
     render();
     void scan();
   }
+
   async function scan() {
-    frames = new Map();
-    scanning = true;
-    scanId = String(Date.now()) + "-" + Math.random().toString(36).slice(2);
-    notice = "Проверяю основной документ и вложенные окна просмотрщика.";
+    if (running) return;
+    frames.clear();scanId=String(Date.now())+"-"+Math.random().toString(36).slice(2);
+    scanning=true;approved=null;render();
+    try { await send({kind:"RR_SCAN_FRAMES",requestId:scanId}); }
+    catch(error) { notice="Ошибка сканирования: "+error.message;show(notice); }
+    await sleep(1800);
+    scanning=false;
+    const best=bestFrame();
+    notice=best ?
+      ("Обнаружено "+best.count+" файлов в окне Яндекса. Теперь нажми «Проверить README.TXT».") :
+      "Список файлов не получен. Проверь доступ расширения к встроенному docviewer и обнови страницу.";
+    show(notice);
+  }
+
+  async function choosePilot(frame) {
+    const roster=await inFrame(frame.frameId,{kind:"RR_SENSOR_LIST"});
+    const items=Array.isArray(roster.items) ? roster.items : [];
+    return items.find(x=>x.kind==="file" && x.name==="README.TXT") ||
+      items.find(x=>x.kind==="file" && /\.(?:txt|xml|htm|html|md|ini|log)$/i.test(x.name)) ||
+      null;
+  }
+
+  function clearPending(outcome) {
+    if (!pending) return;
+    const task=pending;pending=null;
+    clearTimeout(task.timer);
+    task.resolve(outcome);
+  }
+
+  async function downloadOnce(frameId,name, pilotMode,approvedMode) {
+    const token=String(Date.now())+"-"+Math.random().toString(36).slice(2);
+    let done;
+    const wait = new Promise(resolve=>{done=resolve;});
+    pending={token,started:false,resolve:done,timer:null};
+    const armTimer=()=> {
+      if (!pending || pending.token!==token) return;
+      pending.timer=setTimeout(()=>clearPending({
+        state:"timeout",reason:"No browser download was reported"
+      }),25000);
+    };
+    armTimer();
+    let action;
+    try {
+      await send({kind:"RR_ARM",token,key:keyFor(name),folder,filename:name});
+      action=await inFrame(frameId,{
+        kind:"RR_SENSOR_TRIGGER",name,pilot:pilotMode,
+        approvedMode:approvedMode?.mode || null,
+        approvedSlots:approvedMode?.slots ?? null
+      });
+      if (!action.clicked) throw new Error("Встроенная кнопка скачивания не нажата");
+      show("Команда скачивания отправлена: "+name+" ("+action.mode+", кнопок: "+action.slots+")");
+    } catch(error) {
+      clearPending({state:"failed",reason:error.message});
+      await send({kind:"RR_RELEASE",token}).catch(()=>{});
+      return {state:"failed",reason:error.message};
+    }
+    const result=await wait;
+    if (result.state==="timeout") await send({kind:"RR_RELEASE",token}).catch(()=>{});
+    await countDownloads();
     render();
-    try { await send({ kind: "RR_SCAN_FRAMES", requestId: scanId }); }
-    catch (error) { notice = "Не удалось запустить проверку: " + error.message; note(notice); }
-    setTimeout(() => {
-      scanning = false;
-      if (!frames.size) {
-        notice = "Ни один кадр не ответил. В настройках расширения разреши доступ к сайтам docviewer.* и обнови страницу Яндекса.";
-        note(notice);
+    return { ...result, mode:action.mode, slots:action.slots };
+  }
+
+  async function retryDownload(frameId,name,pilotMode,approvedMode,maxRetries) {
+    for (let attempt=1;attempt<=maxRetries&&!stopRequested;attempt++) {
+      progress = name + " · попытка " + attempt + "/" + maxRetries;render();
+      const result=await downloadOnce(frameId,name,pilotMode,approvedMode);
+      if (result.state==="downloaded") return result;
+      show(name+": "+result.state+" · "+(result.reason || ""));
+      // If browser started a transfer but it never completed, do not start
+      // another copy; let the user inspect/stop the stalled browser transfer.
+      if (result.state==="timeout" && result.started) return result;
+      if (/BLOCKED|DANGEROUS|USER_CANCELED|DENIED|permission/i.test(result.reason || "")) return result;
+      if (attempt<maxRetries) await sleep(Math.min(20000,2000*Math.pow(2,attempt)));
+    }
+    return {state:"failed",reason:"retry limit"};
+  }
+
+  async function pilot() {
+    if (running) return;
+    const frame=bestFrame();
+    if (!frame) return scan();
+    try {folder=folderValue();}
+    catch(error) {notice=error.message;render();return;}
+    running=true;stopRequested=false;approved=null;render();
+    try {
+      const target=await choosePilot(frame);
+      if (!target) throw new Error("В этой папке нет README.TXT или другого небольшого текстового файла.");
+      show("Пробный файл: "+target.name+". Запускаю его кнопку скачивания внутри строки.");
+      const result=await retryDownload(frame.frameId,target.name,true,null,2);
+      if (result.state==="downloaded") {
+        approved={frameId:frame.frameId,mode:result.mode,slots:result.slots,
+          checkedFile:target.name,host:frame.host};
+        notice="Пробная загрузка завершена в браузере. Проверь файл и затем запускай текущую папку.";
+        show("Пилот успешен: "+target.name+" · "+result.mode+", "+result.slots+" кнопок.");
       } else {
-        const best = [...frames.values()].sort((a, b) => b.count - a.count)[0];
-        notice = best.count ?
-          "Файлы обнаружены. Теперь нажми «Выбрать файл», затем нажми README.TXT в списке." :
-          "Кадры отвечают, но имён в DOM нет. Открой RAR просмотрщик и повтори поиск.";
-        render();
+        notice="Пилот не подтверждён: "+(result.reason||result.state)+". Скопируй диагностику.";
+        show(notice);
       }
-    }, 1700);
+    } catch(error) {notice="Ошибка теста: "+error.message;show(notice);}
+    finally {running=false;progress="";render();}
   }
-  async function startPick() {
-    if (awaiting) return;
+
+  async function batch() {
+    if (running || !approved) return;
+    const frame=bestFrame();
+    if (!frame || frame.frameId!==approved.frameId) return;
+    try {folder=folderValue();}
+    catch(error) {notice=error.message;render();return;}
+    running=true;stopRequested=false;render();
+    const seen=new Set();
+    let ok=0,errors=0,skipped=0;
     try {
-      await send({ kind: "RR_PICK_FILE" });
-      isPicking = true;
-      notice = "Теперь ОДИН РАЗ нажми на имя README.TXT (или другого файла) СЛЕВА в окне Яндекса. Не на кнопку этого расширения.";
-      note("Ожидаю клик по самому файлу внутри просмотрщика.");
-      setTimeout(() => {
-        if (isPicking) {
-          isPicking = false;
-          notice = "За 45 секунд файл не выбран. Попробуй ещё раз и проверь разрешения docviewer.";
+      await inFrame(frame.frameId,{kind:"RR_SENSOR_SCROLL",reset:true});
+      await sleep(350);
+      for(let page=0;page<250&&!stopRequested;page++) {
+        const roster=await inFrame(frame.frameId,{kind:"RR_SENSOR_LIST"});
+        const files=(roster.items||[]).filter(x=>x.kind==="file");
+        let newCount=0;
+        for(const file of files) {
+          if(stopRequested) break;
+          const key=keyFor(file.name);
+          if(seen.has(key)) continue;
+          seen.add(key);newCount++;
+          const existing=await countDownloads();
+          if(existing[key]?.state==="downloaded") {skipped++;continue;}
+          const result=await retryDownload(frame.frameId,file.name,false,approved,3);
+          if(result.state==="downloaded") ok++;
+          else {errors++;if(result.state==="timeout" && result.started)stopRequested=true;}
           render();
+          await sleep(900);
         }
-      }, 47000);
-    } catch (error) { notice = "Не удалось начать выбор: " + error.message; note(notice); }
+        if(stopRequested)break;
+        const next=await inFrame(frame.frameId,{kind:"RR_SENSOR_SCROLL"});
+        if(!next.scrollable || next.atEnd || (newCount===0 && page>1)) break;
+        await sleep(600);
+      }
+      notice="Проход завершён: "+ok+" получено, "+errors+" ошибок, "+skipped+" уже скачаны. Это только текущая папка.";
+      show(notice);
+    } catch(error) {notice="Очередь прервана: "+error.message;show(notice);}
+    finally {running=false;stopRequested=false;progress="";await countDownloads();render();}
   }
-  function gotPicked(message) {
-    if (!isPicking) return;
-    isPicking = false;
-    void send({ kind: "RR_STOP_PICK" }).catch(() => {});
-    if (!message.found || !message.name) {
-      notice = "Клик получен в " + message.host + ", но элемент не распознан как файл. Нажми прямо на имя README.TXT.";
-      selectedSummary = JSON.stringify({ ancestry: message.ancestry, frameId: message.frameId });
-      note(notice);
-      return;
-    }
-    picked = {
-      name: String(message.name).slice(0, 150),
-      frameId: message.frameId,
-      host: String(message.host || "").slice(0, 90),
-      ancestry: message.ancestry || []
-    };
-    selectedSummary = "";
-    notice = "Файл " + picked.name + " обнаружен. Нажми «Отследить скачивание», затем штатную кнопку скачивания Яндекса.";
-    note("Файл выбран: " + picked.name + " · " + picked.host);
-  }
-  async function startDownloadWatch() {
-    if (!picked || awaiting) return;
-    try {
-      folder = cleanPath(el("rr-folder").value);
-      el("rr-folder").value = folder;
-      await persist();
-    } catch (error) { notice = error.message; render(); return; }
-    const token = String(Date.now()) + "-" + Math.random().toString(36).slice(2);
-    const key = ARCHIVE + "/" + (folder ? folder + "/" : "") + picked.name;
-    try {
-      await send({ kind: "RR_ARM", token, key, folder, filename: picked.name });
-      awaiting = { token, filename: picked.name, started: Date.now(), startedDownload: false };
-      notice = "ОЖИДАЮ: наведи курсор на " + picked.name +
-        " в списке Яндекса и нажми появившийся значок «Скачать». Если файл уже открыт, ищи «Скачать» в его просмотрщике.";
-      note("Ожидаю загрузку файла " + picked.name + " в течение 90 секунд.");
-      setTimeout(async () => {
-        if (!awaiting || awaiting.token !== token) return;
-        if (!awaiting.startedDownload) {
-          await send({ kind: "RR_DISARM", token }).catch(() => {});
-          awaiting = null;
-          notice = "Браузер не начал загрузку за 90 секунд. Нужен снимок действия скачивания.";
-          note(notice);
-        }
-      }, 90000);
-    } catch (error) { notice = "Не удалось начать перехват загрузки: " + error.message; note(notice); }
-  }
-  async function stop() {
-    if (isPicking) {
-      isPicking = false;
-      await send({ kind: "RR_STOP_PICK" }).catch(() => {});
-      notice = "Выбор файла отменён.";
-      note(notice);
-      return;
-    }
-    if (awaiting) {
-      const token = awaiting.token;
-      await send({ kind: "RR_DISARM", token }).catch(() => {});
-      awaiting = null;
-      notice = "Ожидание завершено. Если скачивание уже идёт, оно не прерывается.";
-      note(notice);
-    }
-  }
-  async function copyReport() {
-    const report = {
-      version: "0.2.0",
-      archive: "Disk 2.rar",
-      detectedFrames: [...frames.values()].map(x => ({
-        frameId: x.frameId, host: x.host, top: x.top, candidateCount: x.count,
-        sampleNames: (x.names || []).slice(0, 8), archiveMarker: x.archiveMarker,
-        knownReadme: x.knownReadme
+
+  async function diagnostics() {
+    const report={
+      tool:"RAR Rescue v0.3",
+      targetArchive:"Disk 2.rar",
+      frames:[...frames.values()].map(x=>({
+        id:x.frameId,host:x.host,count:x.count,folders:x.folders,unknown:x.unknown,
+        sampleNames:(x.names||[]).slice(0,8),example:x.example||null
       })),
-      picked: picked ? { name: picked.name, frameId: picked.frameId, host: picked.host,
-        ancestry: picked.ancestry } : null,
-      missedClick: selectedSummary || null,
-      downloaded, failed,
-      events: events.slice(0, 12)
+      approved:approved?{mode:approved.mode,slots:approved.slots,host:approved.host}:null,
+      downloaded,failed,events:events.slice(0,15)
     };
     try {
-      await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
-      note("Диагностика скопирована. Проверь имена файлов перед отправкой.");
-    } catch (error) { notice = "Буфер обмена недоступен: " + error.message; note(notice); }
+      await navigator.clipboard.writeText(JSON.stringify(report,null,2));
+      show("Диагностика скопирована: только имена и структура, без токенов и ссылок.");
+    }catch(error){notice="Не удалось скопировать: "+error.message;render();}
   }
-  chrome.runtime.onMessage.addListener(message => {
-    if (!message || !message.kind) return;
-    if (message.kind === "RR_TOGGLE") mount();
-    if (message.kind === "RR_SENSOR_REPORT" && message.requestId === scanId) {
-      frames.set(String(message.frameId), message);
+
+  chrome.runtime.onMessage.addListener(message=>{
+    if(!message || !message.kind)return;
+    if(message.kind==="RR_TOGGLE")mount();
+    if(message.kind==="RR_SENSOR_REPORT" && message.requestId===scanId) {
+      frames.set(String(message.frameId),message);
       render();
     }
-    if (message.kind === "RR_SENSOR_PICKED") gotPicked(message);
-    if (message.kind === "RR_STARTED" && awaiting && message.token === awaiting.token) {
-      awaiting.startedDownload = true;
-      notice = "Загрузка началась. Ожидаю завершения в браузере.";
-      note(notice);
+    if(message.kind==="RR_STARTED" && pending && message.token===pending.token) {
+      pending.started=true;
+      clearTimeout(pending.timer);
+      const token=pending.token;
+      pending.timer=setTimeout(()=>{
+        if(pending && pending.token===token)clearPending({
+          state:"timeout",reason:"Browser download exceeded 3 minutes",started:true
+        });
+      },180000);
+      show("Браузер начал загрузку. Ожидаю сохранения файла.");
     }
-    if (message.kind === "RR_RESULT" && awaiting && message.token === awaiting.token) {
-      awaiting = null;
-      notice = message.state === "downloaded" ?
-        "Загрузка завершена; проверь фактический файл в папке YandexRARRecovery. Сверка содержимого пока недоступна." :
-        "Скачивание завершилось ошибкой: " + (message.reason || "неизвестная ошибка");
-      note(picked?.name + ": " + message.state + " (" + (message.bytes || 0) + " байт)");
-      void updateLedger();
+    if(message.kind==="RR_RESULT" && pending && message.token===pending.token) {
+      clearPending(message);
+      show("Результат загрузки: "+message.state+
+        " ("+(message.bytes||0)+" байт)"+(message.state==="downloaded"?"":": "+message.reason));
     }
   });
-  void (async () => {
-    try {
-      const saved = (await chrome.storage.local.get(CONFIG_KEY))[CONFIG_KEY] || {};
-      folder = String(saved.folder || "");
-      await updateLedger();
-    } catch (_) {}
-  })();
+  void countDownloads().catch(()=>{});
 })();
