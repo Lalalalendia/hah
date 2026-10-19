@@ -13,6 +13,7 @@
   let notice = "Используем названия файлов и кнопки на скриншотах DevTools.";
   let progress = "";
   let lastInspection = [];
+  let nativeVerified = false;
   let tree = null;
   let treePhase = "";
   let treeFrame = null;
@@ -83,6 +84,8 @@
       !approved || !tree || !tree.scanned || !tree.complete ||
       approved.frameId !== bestFrame().frameId;
     if (el("rr-report")) el("rr-report").disabled = !tree;
+    if (el("rr-native")) el("rr-native").disabled = running || !best;
+    if (el("rr-import")) el("rr-import").disabled = running;
     if (el("rr-empty")) el("rr-empty").disabled = running || !tree || !tree.scanned;
   }
 
@@ -91,29 +94,37 @@
     panel=document.createElement("section");
     panel.id="rr-recovery-panel";
     panel.innerHTML = [
-      '<header><strong>RAR Rescue v0.5</strong><button id="rr-close" title="Закрыть">×</button></header>',
+      '<header><strong>RAR Rescue v0.6</strong><button id="rr-close" title="Закрыть">×</button></header>',
       '<p>Диск 2.rar — 1286 объектов, включая папки. Полное восстановление сохраняет пути и ведёт журнал.</p>',
       '<div class="rr-actions"><button id="rr-scan">1. Найти файлы</button><button id="rr-check">2. Учесть скачанный README</button></div>',
-      '<div class="rr-actions"><button id="rr-pilot">3. Проверить новую загрузку</button></div>',
+      '<div class="rr-actions"><button id="rr-native">3. Нативный тест README</button></div>',
+      '<div class="rr-actions"><button id="rr-pilot">Проверить автоматический клик</button></div>',
       '<p id="rr-status" role="status"></p><p id="rr-found"></p>',
       '<label>Путь открытой папки внутри архива (в корне оставь пустым)<input id="rr-folder" type="text" placeholder="например, HELP" autocomplete="off"></label>',
       '<div class="rr-actions"><button id="rr-inventory">4. Обойти все папки</button><button id="rr-stop">Остановить</button></div>',
       '<div class="rr-actions"><button id="rr-recover">5. Скачать всё со структурой</button><button id="rr-report">Отчёт JSON</button></div>',
+      '<div class="rr-actions"><button id="rr-import">Импортировать карту JSON</button><input id="rr-import-input" type="file" accept=".json,application/json" style="display:none"></div>',
       '<div class="rr-actions"><button id="rr-empty">Создать пустые каталоги</button></div>',
       '<p id="rr-tree"></p>',
       '<p id="rr-progress" role="status"></p>',
       '<div class="rr-actions"><button id="rr-copy">Скопировать диагностику</button></div>',
       '<pre id="rr-log"></pre>',
-      '<small>Сначала нажми «Обойти все папки». Загрузка всего дерева разрешается только если обход завершён, неизвестных объектов нет, число объектов сходится с 1286 и подтверждён тестовый файл. При прерывании вернись в корень архива. EXE/CMD никогда не запускаются.</small>'
+      '<small>Карта из отчёта v0.5 импортируется без повторного обхода. Нативный тест: после запуска сам нажми «Скачать» рядом с README.TXT в просмотрщике. Он проверяет перехват загрузок, но не открывает массовую очередь. Для неё нужен отдельно подтверждённый автоматический клик. Файлы не запускаются.</small>'
     ].join("");
     document.body.append(panel);
     el("rr-close").addEventListener("click",()=>{panel.remove();panel=null;});
     el("rr-scan").addEventListener("click",()=>{void scan();});
     el("rr-check").addEventListener("click",()=>{void inspectReadme();});
     el("rr-pilot").addEventListener("click",()=>{void pilot();});
+    el("rr-native").addEventListener("click",()=>{void nativePilot();});
     el("rr-inventory").addEventListener("click",()=>{void inventoryTree();});
     el("rr-recover").addEventListener("click",()=>{void recoverTree();});
     el("rr-report").addEventListener("click",()=>{exportReport();});
+    el("rr-import").addEventListener("click",()=>el("rr-import-input").click());
+    el("rr-import-input").addEventListener("change",e=>{
+      const file=e.target.files?.[0];if(file)void importTreeFile(file);
+      e.target.value="";
+    });
     el("rr-empty").addEventListener("click",()=>{void createEmptyDirectories();});
     el("rr-stop").addEventListener("click",()=>{stopRequested=true;show("Остановить после текущего файла.");});
     el("rr-copy").addEventListener("click",()=>{void diagnostics();});
@@ -297,6 +308,68 @@
       }
     } catch(error) {notice="Ошибка теста: "+error.message;show(notice);}
     finally {running=false;progress="";render();}
+  }
+
+  async function nativePilot(){
+    if(running)return;
+    const frame=bestFrame();
+    if(!frame){notice="Сначала найди файлы в корне.";show(notice);return;}
+    let target;
+    try {
+      folder=folderValue();
+      if(folder)throw new Error("Для теста README открой корень архива и оставь поле пути пустым.");
+      target=await choosePilot(frame);
+      if(!target || target.name!=="README.TXT")throw new Error("README.TXT не найден в корне.");
+    }catch(error){notice=String(error.message||error);show(notice);return;}
+    running=true;stopRequested=false;nativeVerified=false;render();
+    const token=String(Date.now())+"-"+Math.random().toString(36).slice(2);
+    let resolver;
+    const waiting=new Promise(resolve=>resolver=resolve);
+    pending={token,started:false,resolve:resolver,timer:null};
+    try {
+      await send({kind:"RR_ARM",token,key:keyFor("README.TXT",""),
+        folder:"",filename:"README.TXT"});
+      pending.timer=setTimeout(()=>{
+        if(pending&&pending.token===token)clearPending({
+          state:"timeout",reason:"No native browser download after 75 seconds"
+        });
+      },75000);
+      notice="ОЖИДАЮ ТВОЙ КЛИК: наведи курсор на README.TXT СЛЕВА и нажми кнопку «Скачать» самого Яндекса. Не жми кнопку в шапке RAR.";
+      show(notice);
+      const result=await waiting;
+      if(result.state==="timeout"){
+        await send({kind:"RR_RELEASE",token}).catch(()=>{});
+        const recent=await send({kind:"RR_INSPECT_DOWNLOADS",filename:"README.TXT",folder:""});
+        lastInspection=recent.matches||[];
+      }
+      if(result.state==="downloaded"){
+        nativeVerified=true;
+        notice="Нативная загрузка README учтена: "+(result.bytes||0)+
+          " байт в папке восстановления. Теперь нужно проверить автоматический режим отдельно.";
+      }else{
+        notice="Нативная загрузка не учтена: "+String(result.reason||result.state)+
+          ". Проверь свежие записи в диагностике (без исходных URL).";
+      }
+      await countDownloads();
+      show(notice);
+    }catch(error){
+      await send({kind:"RR_RELEASE",token}).catch(()=>{});
+      if(pending?.token===token)clearPending({state:"failed",reason:String(error.message||error)});
+      notice="Ошибка проверки: "+String(error.message||error);show(notice);
+    }finally{running=false;progress="";render();}
+  }
+
+  async function importTreeFile(file){
+    if(running)return;
+    if(file.size>5*1024*1024){notice="JSON больше 5 МБ: импорт отменён.";show(notice);return;}
+    try{
+      const raw=JSON.parse(await file.text());
+      const clean=RarRescueManifest.importManifest(raw,RarRescueUtils);
+      tree=clean;
+      await saveTree();
+      notice="Карта загружена: 1199 файлов, 87 папок. Обход повторять не нужно. Статусы загрузок сброшены в pending, реальные скачивания проверяем отдельно.";
+      show(notice);
+    }catch(error){notice="Импорт отклонён: "+String(error.message||error);show(notice);}
   }
 
   /* Persistent archive manifest. Paths come from the crawler's verified
@@ -574,7 +647,7 @@
 
   async function diagnostics() {
     const report={
-      tool:"RAR Rescue v0.5",
+      tool:"RAR Rescue v0.6",
       targetArchive:"Disk 2.rar",
       frames:[...frames.values()].map(x=>({
         id:x.frameId,host:x.host,count:x.count,folders:x.folders,unknown:x.unknown,
@@ -582,6 +655,7 @@
         iconSamples:(x.iconSamples||[]).slice(0,16)
       })),
       approved:approved?{mode:approved.mode,slots:approved.slots,host:approved.host}:null,
+      nativeVerified,
       lastInspection,
       treeSummary: tree ? {scanned:tree.scanned,complete:tree.complete,objects:tree.observedObjects,
         directories:Object.keys(tree.directories||{}).length,files:Object.keys(tree.files||{}).length,
