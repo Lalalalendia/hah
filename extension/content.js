@@ -949,7 +949,7 @@
 
   async function diagnostics() {
     const report={
-      tool:"RAR Rescue v0.7",
+      tool:"RAR Rescue v0.10",
       targetArchive:"Disk 2.rar",
       frames:[...frames.values()].map(x=>({
         id:x.frameId,host:x.host,count:x.count,folders:x.folders,unknown:x.unknown,
