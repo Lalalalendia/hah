@@ -36,17 +36,12 @@
     const detected=RarRescueArchiveScope.fromYandexPublicLink(location.href,safeArchiveTitle());
     if(scope&&!RarRescueArchiveScope.sameScope(scope,detected))
       throw Error("The active archive changed during recovery");
+    // Output ownership must be allocated by the single background worker,
+    // not by two independent tabs racing storage.get/storage.set.
+    await send({kind:"RR_RESERVE_OUTPUT_ROOT",scope:detected});
     scope=detected;
-    const store=await chrome.storage.local.get([scope.treeStorageKey,"rr_output_owners_v15"]);
-    const owners=store.rr_output_owners_v15||{};
-    const rootKey=scope.outputRoot.normalize("NFC").toLowerCase();
-    if(owners[rootKey]&&owners[rootKey]!==scope.scopeId)
-      throw Error("Another archive already owns this output folder");
-    if(!owners[rootKey]){
-      owners[rootKey]=scope.scopeId;
-      await chrome.storage.local.set({rr_output_owners_v15:owners});
-    }
     if(!tree){
+      const store=await chrome.storage.local.get(scope.treeStorageKey);
       const saved=store[scope.treeStorageKey];
       if(saved?.scopeId===scope.scopeId)tree=saved;
     }
