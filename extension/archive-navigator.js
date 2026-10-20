@@ -108,10 +108,10 @@ class ArchiveNavigator {
        !this.manifest.has(dest))throw new Error("Unknown manifest folder: "+dest);
     const row=await this.crawler.locate(child,"folder");
     if(!row)throw new Error("Folder entry not found in viewer: "+dest);
-    const before=this.crawler.snapshot();
+    const before=this.crawler.snapshot(),hint=this.crawler.navigationHint();
     const clickable=row.querySelector('[class*="resourceItemName_"]')||row;
     clickable.click();
-    if(!await this.crawler.waitForChange(before))
+    if(!await this.crawler.waitForChange(before,8500,hint))
       throw new Error("Cannot confirm entry into: "+dest);
     const listing=await this.crawler.enumerate();
     this.check(dest,listing);
@@ -124,9 +124,9 @@ class ArchiveNavigator {
     const parent=path.slice(0,-1).join("/");
     const back=this.crawler.backButton();
     if(!back)throw new Error("Viewer has no supported back button");
-    const before=this.crawler.snapshot();
+    const before=this.crawler.snapshot(),hint=this.crawler.navigationHint();
     back.click();
-    if(!await this.crawler.waitForChange(before))
+    if(!await this.crawler.waitForChange(before,8500,hint))
       throw new Error("Cannot confirm return to: "+parent);
     const listing=await this.crawler.enumerate();
     this.check(parent,listing);
