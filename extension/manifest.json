@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Yandex RAR Rescue",
-  "version": "0.15.2",
+  "version": "0.15.3",
   "description": "RAR Rescue: inventory any Yandex web-viewable RAR, sequential downloads and per-archive resume.",
   "permissions": [
     "downloads",
-    "storage"
+    "storage",
+    "scripting"
   ],
   "host_permissions": [
     "https://disk.yandex.ru/*",
@@ -50,7 +51,8 @@
       ],
       "run_at": "document_idle",
       "all_frames": true,
-      "match_about_blank": true
+      "match_about_blank": true,
+      "match_origin_as_fallback": true
     }
   ]
 }
