@@ -487,13 +487,20 @@
       expectedObjects:null,
       createdAt:new Date().toISOString(),
       scanned:false,complete:false,observedObjects:0,
-      directories:{},files:{},completedSubtrees:[],unknown:[],issues:[]
+      directories:Object.create(null),files:Object.create(null),
+      completedSubtrees:[],unknown:[],issues:[]
     };
   }
 
   function storeDirectory(event) {
     if(!tree || !event || event.event!=="directory")throw new Error("Invalid directory scan event");
     const path=String(event.path||"");
+    const safePart=value=>typeof value==="string"&&
+      value.length>0&&value.length<=200&&
+      ![".","..","__proto__","prototype","constructor"].includes(value.toLowerCase())&&
+      !/[/\\\\\u0000-\u001f]/.test(value);
+    if(path&&path.split("/").some(part=>!safePart(part)))
+      throw new Error("Unsafe archive directory identifier");
     const items=event.items||[];
     if(Object.prototype.hasOwnProperty.call(tree.directories,path)) {
       const prior=tree.directories[path].entries||[];
@@ -509,6 +516,10 @@
     };
     for(const row of items){
       const source=(path?path+"/":"")+row.name;
+      if(!safePart(row.name)){
+        tree.issues.push({path:source,reason:"unsafe-entry-name"});
+        continue;
+      }
       if(row.kind==="file") {
         let destination;
         try {destination=RarRescueUtils.relative(path,row.name,archiveRoot());}
@@ -637,8 +648,13 @@
         !(tree.issues||[]).some(x=>x.reason!=="crawl-interrupted"));
       for(let attempt=0;attempt<(hasCheckpoint?2:1);attempt++){
         const restoring=hasCheckpoint&&attempt===0;
-        if(restoring)tree.issues=[];
-        else tree=newTree();
+        if(restoring){
+          // Chrome storage can deserialize plain prototype-bearing objects;
+          // restore safe dictionaries before adding any viewer-supplied keys.
+          tree.directories=Object.assign(Object.create(null),tree.directories);
+          tree.files=Object.assign(Object.create(null),tree.files);
+          tree.issues=[];
+        }else tree=newTree();
         await saveTree();
         const checkpoint=restoring?{
           directories:tree.directories,completedSubtrees:tree.completedSubtrees
