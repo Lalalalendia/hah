@@ -298,7 +298,15 @@
         }
         here.index++;
         try{return this.push(path,collection);}
-        catch(error){this.halted=true;return {ok:false,error:error.message,path};}
+        catch(error){
+          // The UI is already inside the child. Keep a provisional stack
+          // frame so the NEXT begin() can safely rewind by the verified
+          // parent list, even though the child's cache was rejected.
+          this.frames.push({path,entries:collection.items,folders:[],index:0,
+            signature:collection.items.map(x=>x.name).sort().join("\n")});
+          this.halted=true;
+          return {ok:false,error:error.message,path};
+        }
       }
       if(this.frames.length===1)return {ok:true,event:"complete",
         paths:this.seenPaths.size,objects:this.objectCount};
