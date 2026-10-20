@@ -29,9 +29,11 @@ const scope={chrome:hooks,URL,Date,setTimeout,clearTimeout};
 scope.globalThis=scope;
 vm.createContext(scope);
 vm.runInContext(fs.readFileSync(path.join(root,"common.js"),"utf8"),scope);
+vm.runInContext(fs.readFileSync(path.join(root,"archive-scope.js"),"utf8"),scope);
 vm.runInContext(fs.readFileSync(path.join(root,"harvest-worker.js"),"utf8"),scope);
+vm.runInContext(fs.readFileSync(path.join(root,"harvest-router.js"),"utf8"),scope);
 vm.runInContext(fs.readFileSync(path.join(root,"background.js"),"utf8")
-  .replace('importScripts("common.js","archive-scope.js","harvest-worker.js");',''),scope);
+  .replace('importScripts("common.js","archive-scope.js","harvest-worker.js","harvest-router.js");',''),scope);
 assert(messageHandler && createdHandler && changedHandler && filenameHandler);
 const sender={tab:{id:10,url:"https://disk.yandex.ru/d/_RSlWomRWmty1w"},
   url:"https://disk.yandex.ru/d/_RSlWomRWmty1w",frameId:0};
