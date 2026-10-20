@@ -26,8 +26,8 @@ const ready=Promise.all([
 }).catch(()=>{});
 async function bindHarvestScope(sender,raw){
   if(!raw){
-    if(rawHarvest.scope)throw Error("This capture requires its archive identity");
-    return rawHarvest; // Legacy fixture only
+    if(rawHarvest.scope)verifyHarvestOwner(sender);
+    return rawHarvest; // Existing active archive or legacy fixture
   }
   const candidate=RarRescueArchiveScope.fromYandexPublicLink(sender.tab.url,raw.archiveName);
   if(raw.scopeId!==candidate.scopeId||raw.outputRoot!==candidate.outputRoot)
