@@ -51,7 +51,7 @@ const work=ctx.RarRescuePlan.pendingDirectories(all,{
 assert(work.ok,JSON.stringify(work));
 assert.equal(work.pending,2);
 assert.equal(work.visitedDirectoryCount,2);
-assert.deepEqual(work.groups.map(g=>g.path),["HELP","REPORT"]);
+assert.deepEqual(Array.from(work.groups,g=>g.path),["HELP","REPORT"]);
 assert(!work.groups.some(g=>g.path==="PLUGINS"));
 const blocked=ctx.RarRescuePlan.pendingDirectories(all,{
   "Disk-2.rar/HELP/SECOND.XML":{state:"needs-review"}
