@@ -17,6 +17,8 @@
       this.halted=false;
       this.seenPaths=new Set();
       this.objectCount=0;
+      this.resumeDirectories=new Map();
+      this.resumeComplete=new Set();
     }
 
     currentRows() { return this.dom.archiveRows(this.doc); }
@@ -78,10 +80,71 @@
       return path;
     }
 
+    signatureOf(entries){
+      return entries.map(x=>x.kind+"|"+x.name).sort().join("\n");
+    }
+    loadCheckpoint(checkpoint){
+      this.resumeDirectories=new Map();
+      this.resumeComplete=new Set();
+      if(!checkpoint)return;
+      const dirs=checkpoint.directories,closed=checkpoint.completedSubtrees;
+      if(!dirs||typeof dirs!=="object"||Array.isArray(dirs)||
+         !Array.isArray(closed)||Object.keys(dirs).length>this.maxObjects||
+         !Object.prototype.hasOwnProperty.call(dirs,""))
+        throw new Error("invalid-crawl-checkpoint");
+      for(const [path,dir] of Object.entries(dirs)){
+        if(typeof path!=="string"||path.length>2500||!dir||
+           dir.path!==path||!Array.isArray(dir.entries)||
+           dir.entries.length>this.maxObjects||
+           (path&&path.split("/").some(part=>!part||part==="."||part===".."||
+             part.length>200||/[\\\\\u0000-\u001f]/.test(part))))
+          throw new Error("invalid-crawl-checkpoint-path");
+        const names=new Set();
+        for(const entry of dir.entries){
+          if(!entry||typeof entry.name!=="string"||
+             !/^[^\u0000-\u001f/\\\\]{1,200}$/.test(entry.name)||
+             !["file","folder"].includes(entry.kind)||
+             names.has(entry.name.normalize("NFC").toLowerCase()))
+            throw new Error("invalid-crawl-checkpoint-entry");
+          names.add(entry.name.normalize("NFC").toLowerCase());
+        }
+        this.resumeDirectories.set(path,dir.entries);
+      }
+      for(const path of closed){
+        if(typeof path!=="string"||!path||!this.resumeDirectories.has(path))
+          throw new Error("invalid-crawl-checkpoint-closed-path");
+        this.resumeComplete.add(path);
+      }
+    }
+    countCachedSubtree(path){
+      // A closed subtree is a *completed* DFS frame. Every folder child
+      // must already have a captured listing, even if it was empty.
+      const seen=new Set(),pending=[path];
+      let objects=0;
+      while(pending.length){
+        const item=pending.pop();
+        if(seen.has(item))throw new Error("checkpoint-folder-cycle");
+        seen.add(item);
+        const entries=this.resumeDirectories.get(item);
+        if(!entries)throw new Error("checkpoint-missing-child-directory");
+        objects+=entries.length;
+        if(this.objectCount+objects>this.maxObjects)
+          throw new Error("maximum-object-count-exceeded");
+        for(const row of entries){
+          if(row.kind==="folder")pending.push(item+"/"+row.name);
+        }
+      }
+      if([...seen].some(key=>this.seenPaths.has(key)))
+        throw new Error("checkpoint-overlapping-visited-path");
+      return {objects,paths:seen};
+    }
     push(path,collection){
       if(!collection.ok || !collection.complete)throw new Error(collection.error || "incomplete-directory-inventory");
       if(this.seenPaths.has(path))throw new Error("directory-cycle-or-duplicate");
       const entries=collection.items;
+      const cached=this.resumeDirectories.get(path);
+      if(cached&&this.signatureOf(cached)!==this.signatureOf(entries))
+        throw new Error("checkpoint-directory-changed:"+path);
       if(this.objectCount+entries.length>this.maxObjects)throw new Error("maximum-object-count-exceeded");
       this.objectCount+=entries.length;
       this.seenPaths.add(path);
@@ -95,13 +158,15 @@
         discoveredObjects:this.objectCount};
     }
 
-    async begin(expectedArchiveName=null) {
+    async begin(expectedArchiveName=null,checkpoint=null) {
       this.frames=[];this.halted=false;this.seenPaths.clear();this.objectCount=0;
+      try{this.loadCheckpoint(checkpoint);}
+      catch(error){return {ok:false,error:String(error.message||error)};}
       // Verify viewer identity, never infer the root from expected member names.
       const header=this.doc.querySelector('[class*="archiveHeader_"]');
       if(expectedArchiveName){
         const label=header?.querySelector("strong")?.textContent?.trim();
-        if(!header || (label && label.normalize("NFC")!==expectedArchiveName.normalize("NFC")))
+        if(!label || !header || label.normalize("NFC")!==expectedArchiveName.normalize("NFC"))
           return {ok:false,error:"archive-viewer-identity-not-confirmed"};
       }
       // Some viewer versions expose a navigational path; when present, it is
@@ -170,6 +235,18 @@
         if(this.frames.length>=this.maxDepth) {
           this.halted=true;return {ok:false,error:"maximum-depth-exceeded",path};
         }
+        if(this.resumeComplete.has(path)){
+          try{
+            const cached=this.countCachedSubtree(path);
+            for(const seen of cached.paths)this.seenPaths.add(seen);
+            this.objectCount+=cached.objects;
+            here.index++;
+            return {ok:true,event:"skipped",path,skippedObjects:cached.objects,
+              cachedPaths:cached.paths.size,discoveredObjects:this.objectCount};
+          }catch(error){
+            this.halted=true;return {ok:false,error:String(error.message||error),path};
+          }
+        }
         const row=await this.locate(name,"folder");
         if(!row){
           this.halted=true;return {ok:false,error:"folder-row-not-visible",path};
@@ -213,7 +290,8 @@
         this.halted=true;return {ok:false,error:"parent-inventory-changed",path:parent.path};
       }
       this.frames.pop();
-      return {ok:true,event:"returned",path:parent.path,depth:this.frames.length-1};
+      return {ok:true,event:"returned",path:parent.path,
+        completedPath:child.path,depth:this.frames.length-1};
     }
   }
 
