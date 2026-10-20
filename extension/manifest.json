@@ -1,0 +1,55 @@
+{
+  "manifest_version": 3,
+  "name": "Yandex RAR Rescue",
+  "version": "0.14.0",
+  "description": "RAR Rescue: recover non-clicked files after viewer refresh; 120s per click, full path audit, no duplicate retries.",
+  "permissions": [
+    "downloads",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://disk.yandex.ru/*",
+    "https://docviewer.yandex.ru/*",
+    "https://docviewer.360.yandex.ru/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "RAR Rescue - Скачать всё"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://disk.yandex.ru/*"
+      ],
+      "js": [
+        "common.js",
+        "manifest-model.js",
+        "recovery-plan.js",
+        "content.js"
+      ],
+      "css": [
+        "panel.css"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://disk.yandex.ru/*",
+        "https://docviewer.yandex.ru/*",
+        "https://docviewer.360.yandex.ru/*"
+      ],
+      "js": [
+        "archive-dom.js",
+        "archive-crawler.js",
+        "archive-navigator.js",
+        "frame-sensor.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true
+    }
+  ]
+}

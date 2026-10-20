@@ -1,0 +1,67 @@
+name: RAR Rescue Extension Checks
+on:
+  push:
+    paths:
+      - "extension/**"
+      - "tools/test_archive_fixture.py"
+      - "tools/test_recursive_fixture.py"
+      - "tools/test_direct_navigation_fixture.py"
+      - "tools/test_virtual_518_fixture.py"
+      - ".github/workflows/extension-check.yml"
+  pull_request:
+    paths:
+      - "extension/**"
+      - ".github/workflows/extension-check.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: rar-rescue-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Static JavaScript validation
+        run: |
+          node --check extension/common.js
+          node --check extension/content.js
+          node --check extension/archive-dom.js
+          node --check extension/manifest-model.js
+          node --check extension/recovery-plan.js
+          node --check extension/tests/recovery-plan.cjs
+          node --check extension/archive-crawler.js
+          node --check extension/archive-navigator.js
+          node --check extension/harvest-worker.js
+          node --check extension/tests/harvest-120s.cjs
+          node --check extension/tests/no-click-resume.cjs
+          node --check extension/frame-sensor.js
+          node --check extension/tests/dom-smoke.cjs
+          node --check extension/tests/download-history.cjs
+          node --check extension/tests/import-manifest.cjs
+          node --check extension/background.js
+          node --check extension/tests/smoke.cjs
+      - name: Security and manifest smoke tests
+        run: |
+          node extension/tests/smoke.cjs
+          node extension/tests/dom-smoke.cjs
+          node extension/tests/download-history.cjs
+          node extension/tests/harvest-120s.cjs
+          node extension/tests/no-click-resume.cjs
+          node extension/tests/import-manifest.cjs
+          node extension/tests/recovery-plan.cjs
+      - name: Chromium archive DOM integration fixture
+        run: |
+          python -m pip install -q selenium
+          python tools/test_archive_fixture.py
+          python tools/test_recursive_fixture.py
+          python tools/test_direct_navigation_fixture.py
+          python tools/test_virtual_518_fixture.py
+      - name: Upload ready-to-install extension directory
+        uses: actions/upload-artifact@v4
+        with:
+          name: rar-rescue-v14
+          path: extension/
+          retention-days: 7
