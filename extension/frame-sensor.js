@@ -20,7 +20,7 @@
       folders:items.filter(x => x.kind === "folder").length,
       unknown:items.filter(x => x.kind === "unknown").length,
       names:items.slice(0,12).map(x => x.name),
-      knownReadme:items.some(x => x.name === "README.TXT" && x.kind === "file"),
+      archiveName:document.querySelector('[class*="archiveHeader_"] strong')?.textContent?.trim()||null,
       rowSelector:'[title][class*="resourceItem_"]',
       example:items.find(x => x.kind === "file") || null,
       iconSamples:items.slice(0, 16).map(x => ({
@@ -105,7 +105,7 @@
       return false;
     }
     if (message.kind === "RR_SENSOR_NAV_START") {
-      void pathNavigator.start(message.directories).then(sendResponse,error=>
+      void pathNavigator.start(message.directories,message.archiveName).then(sendResponse,error=>
         sendResponse({ok:false,error:String(error.message||error).slice(0,200)}));
       return true;
     }
@@ -119,7 +119,7 @@
       return false;
     }
     if (message.kind === "RR_SENSOR_CRAWL_BEGIN") {
-      void crawler.begin().then(sendResponse,error=>
+      void crawler.begin(message.archiveName||null).then(sendResponse,error=>
         sendResponse({ok:false,error:String(error.message || error)}));
       return true;
     }
