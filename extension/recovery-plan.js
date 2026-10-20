@@ -53,36 +53,69 @@ function selectTwo(tree,ledger={}){
     sameBasename:pair[0].name.toLowerCase()===pair[1].name.toLowerCase(),
     candidates:candidates.length};
 }
+function collisionName(name){
+  // The browser may append " (2)" to a late download filename. Blocking
+  // related names is safer than accidentally assigning an old transfer to a
+  // new file in another source directory.
+  return String(name||"").normalize("NFC").toLowerCase()
+    .replace(/ \([1-9][0-9]{0,3}\)(\.[^.]+)?$/,"$1");
+}
 function pendingDirectories(tree,ledger={}){
   if(!tree || !tree.scanned || !tree.complete || tree.observedObjects!==1286 ||
      !tree.directories || !tree.files)
     return {ok:false,error:"Archive manifest is not complete"};
-  const byFolder=new Map();
+  const all=Object.values(tree.files);
+  if(all.length!==1199)return {ok:false,error:"Unexpected manifest file count"};
   const blocked=[];
+  const blockedNames=new Set();
   let skipped=0;
-  for(const file of Object.values(tree.files)){
+  const unresolvedStates=new Set(["armed","awaiting","needs-review","failed"]);
+  for(const file of all) {
     if(!file || typeof file.sourcePath!=="string" ||
        typeof file.folder!=="string" || typeof file.name!=="string" ||
        file.sourcePath!==(file.folder?file.folder+"/":"")+file.name ||
        !Object.prototype.hasOwnProperty.call(tree.directories,file.folder))
       return {ok:false,error:"Invalid source path in archive manifest"};
-    const record=ledger["Disk-2.rar/"+file.sourcePath];
+    const key="Disk-2.rar/"+file.sourcePath;
+    const record=ledger[key];
     if(record?.state==="downloaded"){skipped++;continue;}
-    if(["armed","awaiting","needs-review","failed"].includes(record?.state) ||
-       file.status==="needs-review"){
-      blocked.push(file.sourcePath);continue;
+    // An imported or restored manifest may claim a completed file whose
+    // browser-ledger proof has been lost. Do not silently re-download it.
+    if(unresolvedStates.has(record?.state) ||
+       unresolvedStates.has(file.status) || file.status==="downloaded"){
+      blocked.push({sourcePath:file.sourcePath,filename:file.name,
+        state:record?.state||file.status||"needs-review",
+        reason:String(record?.reason||file.error||"Requires verification").slice(0,140)});
+      blockedNames.add(collisionName(file.name));
+    }
+  }
+  const blockedPaths=new Set(blocked.map(x=>x.sourcePath));
+  const collisionBlocked=[];
+  const byFolder=new Map();
+  for(const file of all){
+    if(ledger["Disk-2.rar/"+file.sourcePath]?.state==="downloaded" ||
+       blockedPaths.has(file.sourcePath))continue;
+    if(blockedNames.has(collisionName(file.name))){
+      collisionBlocked.push(file.sourcePath);
+      continue;
     }
     const files=byFolder.get(file.folder)||[];
     files.push({sourcePath:file.sourcePath,folder:file.folder,name:file.name});
     byFolder.set(file.folder,files);
   }
-  if(blocked.length)return {ok:false,error:"Previously requested files require manual review",
-    blocked:blocked.slice(0,15),blockedCount:blocked.length};
   const groups=[...byFolder].sort(([a],[b])=>a.localeCompare(b))
     .map(([path,files])=>({path,files}));
-  return {ok:true,groups,pending:groups.reduce((n,g)=>n+g.files.length,0),
-    skipped,visitedDirectoryCount:groups.length};
+  const pending=groups.reduce((n,g)=>n+g.files.length,0);
+  return {
+    ok:true,groups,pending,skipped,
+    blocked,blockedCount:blocked.length,
+    collisionBlocked:collisionBlocked.slice(0,100),
+    collisionBlockedCount:collisionBlocked.length,
+    held:blocked.length+collisionBlocked.length,
+    visitedDirectoryCount:groups.length,
+    accounted:pending+skipped+blocked.length+collisionBlocked.length
+  };
 }
 
-root.RarRescuePlan=Object.freeze({selectTwo,pendingDirectories});
+root.RarRescuePlan=Object.freeze({selectTwo,pendingDirectories,collisionName});
 })(globalThis);
