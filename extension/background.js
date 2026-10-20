@@ -50,9 +50,10 @@ function downloadEligible(item, record, now=Date.now()) {
   if (now-record.started > PENDING_WINDOW_MS || record.downloadId!=null && record.downloadId!==item.id) return false;
   const base=String(item.filename||"").replace(/\\/g,"/").split("/").pop();
   if (base) return sameExpectedFile(base,record.filename);
-  // Only the originating tab can be associated when Chrome hasn't yet
-  // supplied a name. Never guess for unrelated positive or detached tabs.
-  return item.tabId===record.tabId;
+  // An unlabelled download is ambiguous if the viewer can deliver older
+  // requests late. Wait until Chrome supplies its filename instead of
+  // claiming it based only on the tab ID.
+  return false;
 }
 function findActiveWatcher(item) {
   const records=Object.values(watchers).filter(w=>w && w.downloadId==null &&
@@ -208,6 +209,89 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       }
       const result = await chrome.tabs.sendMessage(tabId, payload, { frameId });
       respond(result && typeof result === "object" ? result : {ok:false,error:"Viewer did not respond"});
+      return;
+    }
+    if(message.kind==="RR_PREPARE_RESUME") {
+      if(sender.frameId!==0)throw new Error("Only main recovery panel can inspect or defer transfers");
+      const ledger=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY]||{};
+      const files=Object.entries(ledger).filter(([key,val])=>
+        key.startsWith("Disk-2.rar/") &&
+        ["needs-review","armed","awaiting","failed"].includes(val?.state));
+      const history=await chrome.downloads.search({limit:1000,orderBy:["-startTime"]});
+      let reconciled=0;
+      let deferred=0;
+      const changes=[];
+      for(const [key,entry] of files) {
+        const target=String(entry.target||"").replace(/\\/g,"/").toLowerCase();
+        if(!target)continue;
+        const matched=history.find(item=>{
+          const path=String(item.filename||"").replace(/\\/g,"/").toLowerCase();
+          const received=Number(item.bytesReceived)||0;
+          const total=Number(item.totalBytes)||0;
+          return item.state==="complete" && received>0 &&
+            (total===0||received===total) && item.exists!==false &&
+            RarRescueUtils.isDownloadHost(item.url||item.finalUrl||"") &&
+            path.endsWith("/"+target);
+        });
+        if(matched){
+          const watcher=Object.values(watchers).find(w=>w?.key===key);
+          if(watcher) {
+            // Use the existing completion path to remove the watcher, update
+            // the ledger and notify any still-open UI.
+            await completeFromChrome(watcher,matched);
+          } else {
+            ledger[key]={...entry,state:"downloaded",downloadId:matched.id,
+              bytes:Number(matched.bytesReceived),target:entry.target,
+              reason:"Reconciled completed Chrome download at exact target",
+              time:new Date().toISOString()};
+            changes.push(key);
+          }
+          reconciled++;
+        }
+      }
+      if(changes.length)await chrome.storage.local.set({[LEDGER_KEY]:ledger});
+      const live=watchers[String(tabId)];
+      let active=null;
+      if(live){
+        const item=live.downloadId!=null?
+          history.find(x=>x.id===live.downloadId) :
+          await latestAttemptItem(live);
+        if(item?.state==="complete" || item?.state==="interrupted"){
+          await completeFromChrome(live,item);
+        } else if(item?.state==="in_progress"){
+          active={path:live.key.slice("Disk-2.rar/".length),state:"in_progress",
+            bytes:Number(item.bytesReceived)||0,
+            ageSeconds:Math.max(0,Math.floor((Date.now()-live.started)/1000))};
+        } else {
+          const age=Date.now()-live.started;
+          if(age<8*60*1000) {
+            active={path:live.key.slice("Disk-2.rar/".length),state:"waiting",
+              secondsUntilSafeDefer:Math.ceil((8*60*1000-age)/1000)};
+          } else {
+            // An old transfer may still appear much later. Preserve an
+            // immutable uncertain ledger record, NEVER re-request its path,
+            // and reserve related basenames in the planner. Do not claim
+            // or redirect a future late download without proof.
+            await markReview(live,
+              "Deferred unresolved download; original request may still complete later");
+            delete watchers[String(tabId)];
+            await saveWatchers();
+            deferred++;
+          }
+        }
+      }
+      const otherActive=Object.keys(watchers).filter(id=>id!==String(tabId)).length;
+      if(otherActive && !active)
+        active={state:"another-tab",reason:"Another Yandex recovery transfer is still active"};
+      const updated=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY]||{};
+      const unresolved=Object.entries(updated).filter(([key,val])=>
+        key.startsWith("Disk-2.rar/") &&
+        ["needs-review","armed","awaiting","failed"].includes(val?.state));
+      respond({ok:true,reconciled,deferred,active,unresolvedCount:unresolved.length,
+        unresolved:unresolved.slice(0,12).map(([key,val])=>({
+          path:key.slice("Disk-2.rar/".length),
+          state:val.state,reason:String(val.reason||"").slice(0,140)
+        }))});
       return;
     }
     if (message.kind === "RR_ARM") {
