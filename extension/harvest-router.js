@@ -115,8 +115,16 @@ class HarvestRouter {
     if(owned.length===1)return owned[0];
     if(owned.length>1)return null;
     if(this.legacy.state.downloads[id])return this.legacy;
+    // A provider hostname or tab ID alone does not identify a browser
+    // download as belonging to this extension. Require at least one click
+    // dispatch without an assigned download ID; otherwise Chrome keeps its
+    // own default filename and we record the event as unattributed.
+    const now=Date.now();
+    const hasUnassignedClick=w=>Object.values(w.state.requests).some(r=>
+      Number(r.dispatchAt)>0&&(!r.downloadIds||r.downloadIds.length===0)&&
+      now-Number(r.dispatchAt)>=-2000&&now-Number(r.dispatchAt)<=60*60*1000);
     const active=all.filter(w=>!w.invalidTab&&w.recording()&&w.sourceAllowed(item)&&
-      (w.state.phase==="collecting"||w.summary().unresolvedCount>0));
+      hasUnassignedClick(w));
     const sameTab=active.filter(w=>w.state.tabId===item.tabId);
     if(sameTab.length===1)return sameTab[0];
     if(sameTab.length>1)return null;
