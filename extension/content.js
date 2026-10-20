@@ -32,16 +32,18 @@
     const viewer=String(bestFrame()?.archiveName||"").trim();
     const meta=document.querySelector('meta[property="og:title"]')?.content||
       document.querySelector('meta[name="twitter:title"]')?.content||"";
-    return RarRescueArchiveScope.resolveName(location.href,[
+    const fingerprint=RarRescueArchiveScope.viewerFingerprint(bestFrame());
+    const resolved=RarRescueArchiveScope.resolveName(location.href,[
       {source:"viewer",value:viewer},
       {source:"metadata",value:meta},
       {source:"page",value:String(document.title||"")}
-    ]);
+    ],fingerprint);
+    return {...resolved,fingerprint};
   }
   async function ensureArchiveScope(){
     const resolved=archiveTitleResolution();
-    const detected=RarRescueArchiveScope.fromYandexPublicLink(
-      location.href,resolved.archiveName);
+    const detected=RarRescueArchiveScope.fromYandexViewer(
+      location.href,resolved.archiveName,resolved.fingerprint);
     if(scope&&!RarRescueArchiveScope.sameScope(scope,detected))
       throw Error("The active archive changed during recovery");
     // Output ownership must be allocated by the single background worker,
@@ -50,7 +52,7 @@
     scope=detected;
     verifiedViewerTitle=resolved.viewerExpectedTitle;
     if(resolved.fallback)show("Яндекс не передал имя архива. Использую папку "+
-      resolved.archiveName+" (по ID публичной ссылки); исходные имена файлов сохраняются.");
+      resolved.archiveName+" (по адресу и содержимому веб-просмотрщика); исходные имена файлов сохраняются.");
     if(!tree){
       const store=await chrome.storage.local.get(scope.treeStorageKey);
       const saved=store[scope.treeStorageKey];
