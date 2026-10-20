@@ -96,12 +96,10 @@ class HarvestRouter {
     if(worker.scope){
       for(const old of this.workers.values()){
         if(old===worker)continue;
+        if(old.state.tabId===sender.tab.id&&old.recording()&&
+           old.summary().unresolvedCount>0)
+          throw Error("Previous archive has pending downloads in this tab; use a separate tab");
         if(old.state.tabId===sender.tab.id&&old.state.phase==="collecting"){
-          // A delayed Yandex download carries no verified archive ID. Reusing
-          // the same tab for a different archive while an old click is
-          // unresolved would make those bytes indistinguishable.
-          if(old.summary().unresolvedCount>0)
-            throw Error("Previous archive has pending downloads in this tab; use a separate tab");
           old.invalidTab=true;
           await old.stop();
         }
