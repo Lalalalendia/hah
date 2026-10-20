@@ -575,88 +575,104 @@
     }
   }
 
+  async function inventoryPass(frameId,checkpoint){
+    let item=await inFrame(frameId,{
+      kind:"RR_SENSOR_CRAWL_BEGIN",archiveName:scope.archiveName,checkpoint
+    });
+    if(!item.ok)throw new Error(item.error||"Не удалось подтвердить корень архива");
+    storeDirectory(item);await saveTree();
+    for(let iteration=0;iteration<MAX_CRAWL_EVENTS&&!stopRequested;iteration++){
+      item=await inFrame(frameId,{kind:"RR_SENSOR_CRAWL_STEP"});
+      if(!item.ok)throw new Error((item.path||"")+" "+(item.error||"Ошибка навигации"));
+      if(item.event==="complete"){
+        finalizeTree(item);
+        await saveTree();
+        notice=tree.complete?
+          "Карта готова: "+Object.keys(tree.files).length+" файлов и "+
+            (Object.keys(tree.directories).length-1)+" папок.":
+          "Обход закончился, но есть неподтверждённые элементы: "+
+            tree.unknown.length+" неизвестных, "+tree.issues.length+" ошибок.";
+        show(notice);
+        return true;
+      }
+      if(item.event==="directory"){
+        storeDirectory(item);await saveTree();
+        progress="Обход: "+(item.path||"[корень]")+
+          " · объектов: "+tree.observedObjects;
+        render();
+      }
+      if(item.event==="returned"){
+        const closed=String(item.completedPath||"");
+        if(!closed||!Object.prototype.hasOwnProperty.call(tree.directories,closed))
+          throw new Error("Crawler returned an unknown completed folder");
+        if(!tree.completedSubtrees.includes(closed)){
+          tree.completedSubtrees.push(closed);
+          await saveTree();
+        }
+      }
+      if(item.event==="skipped"){
+        progress="Продолжение: пропущена уже пройденная ветка "+item.path;
+        render();
+      }
+      if(iteration===MAX_CRAWL_EVENTS-1)
+        throw new Error("Превышен технический предел шагов обхода");
+    }
+    notice="Обход приостановлен. Завершённые ветки сохранены для продолжения.";
+    show(notice);
+    return false;
+  }
+
   async function inventoryTree(){
     if(running)return;
     const frame=bestFrame();
     if(!frame){notice="Открой корень архива и найди файлы.";show(notice);return;}
     if(!scope)throw Error("Archive scope is unknown");
     running=true;stopRequested=false;treePhase="inventory";treeFrame=frame.frameId;
-    const checkpointEligible=Boolean(tree&&tree.schema==="rar-rescue-tree-v2"&&
-      tree.scopeId===scope.scopeId&&!tree.complete&&!tree.scanned&&
-      Object.keys(tree.directories||{}).length>0&&
-      Array.isArray(tree.completedSubtrees)&&
-      !(tree.unknown||[]).length&&
-      !(tree.issues||[]).some(x=>x.reason!=="crawl-interrupted"));
-    if(!checkpointEligible)tree=newTree();
-    else tree.issues=[]; // Discard only transient failures; keep scanned data.
-    await saveTree();
-    notice=checkpointEligible?
-      "Продолжаю обход по сохранённой карте, проверяя содержимое уже открытых каталогов.":
-      "Строю дерево папок. Не переключай папки вручную во время обхода.";
-    show(notice);
     try {
-      let checkpoint=checkpointEligible?{
-        directories:tree.directories,completedSubtrees:tree.completedSubtrees
-      }:null;
-      let item=await inFrame(frame.frameId,{
-        kind:"RR_SENSOR_CRAWL_BEGIN",archiveName:scope.archiveName,checkpoint
-      });
-      // If the archive's ROOT listing changed since the interrupted crawl,
-      // the old cache is invalid. Do a fresh scan instead of combining trees.
-      if(!item.ok&&String(item.error||"").startsWith("checkpoint-directory-changed:")){
-        tree=newTree();await saveTree();
-        checkpoint=null;
-        item=await inFrame(frame.frameId,{
-          kind:"RR_SENSOR_CRAWL_BEGIN",archiveName:scope.archiveName
-        });
-      }
-      if(!item.ok)throw new Error(item.error||"Не удалось подтвердить корень архива");
-      storeDirectory(item);await saveTree();
-      for(let iteration=0;iteration<MAX_CRAWL_EVENTS && !stopRequested;iteration++){
-        item=await inFrame(frame.frameId,{kind:"RR_SENSOR_CRAWL_STEP"});
-        if(!item.ok)throw new Error((item.path||"")+" "+(item.error||"Ошибка навигации"));
-        if(item.event==="complete") {
-          finalizeTree(item);
-          await saveTree();
-          notice=tree.complete ?
-            "Карта готова: "+Object.keys(tree.files).length+" файлов и "+(Object.keys(tree.directories).length-1)+" папок." :
-            "Обход завершён, но состав архива не подтверждён полностью. Проверь отчёт: "+
-            tree.observedObjects+" найдено; неизвестных: "+
-            tree.unknown.length+", ошибок: "+tree.issues.length+".";
-          show(notice);return;
-        }
-        if(item.event==="directory"){
-          storeDirectory(item);await saveTree();
-          progress="Обход: "+(item.path||"[корень]")+
-            " · объектов: "+tree.observedObjects;
-          render();
-        }
-        if(item.event==="returned"){
-          const closed=String(item.completedPath||"");
-          if(!closed||!Object.prototype.hasOwnProperty.call(tree.directories,closed))
-            throw new Error("Crawler returned an unknown completed folder");
-          if(!tree.completedSubtrees.includes(closed)){
-            tree.completedSubtrees.push(closed);
-            await saveTree(); // Atomic subtree completion checkpoint.
+      const hasCheckpoint=Boolean(tree&&tree.schema==="rar-rescue-tree-v2"&&
+        tree.scopeId===scope.scopeId&&!tree.complete&&!tree.scanned&&
+        Object.prototype.hasOwnProperty.call(tree.directories||{},"")&&
+        Array.isArray(tree.completedSubtrees)&&
+        !(tree.unknown||[]).length&&
+        !(tree.issues||[]).some(x=>x.reason!=="crawl-interrupted"));
+      for(let attempt=0;attempt<(hasCheckpoint?2:1);attempt++){
+        const restoring=hasCheckpoint&&attempt===0;
+        if(restoring)tree.issues=[];
+        else tree=newTree();
+        await saveTree();
+        const checkpoint=restoring?{
+          directories:tree.directories,completedSubtrees:tree.completedSubtrees
+        }:null;
+        notice=restoring?
+          "Продолжаю частичный обход, сохраняя завершённые ветки.":
+          "Обхожу дерево папок с корня RAR.";
+        show(notice);
+        try {
+          await inventoryPass(frame.frameId,checkpoint);
+          return;
+        }catch(error){
+          const message=String(error.message||error);
+          if(restoring&&/checkpoint[- ]directory[- ]changed/i.test(message)){
+            // Archive contents may have changed since the previous run.
+            // Reject the entire old inventory and restart once, rather
+            // than silently mixing old and new folder listings.
+            show("Архив изменился после частичного обхода. Сбрасываю старую карту.");
+            continue;
           }
+          throw error;
         }
-        if(item.event==="skipped"){
-          progress="Повторный обход: подтверждённая ранее ветка "+item.path+
-            " · пропущено повторное скачивание карты, не файлов";
-          render();
-        }
-        if(iteration===MAX_CRAWL_EVENTS-1)throw new Error("Превышен лимит этапов обхода");
       }
-      notice="Обход прерван. Карта сохранена; при следующем запуске завершённые ветки будут пропущены.";
-      show(notice);
-    } catch(error) {
-      tree.issues.push({path:"",reason:"crawl-interrupted",detail:String(error.message||error).slice(0,200)});
+    }catch(error){
+      if(!tree)tree=newTree();
+      tree.issues.push({path:"",reason:"crawl-interrupted",
+        detail:String(error.message||error).slice(0,200)});
       await saveTree();
-      notice="Остановлено: "+error.message+
-        ". Карта частично сохранена; для продолжения открой корень RAR.";
+      notice="Обход остановлен: "+String(error.message||error)+
+        ". Пройденные ветки сохранены; повтори запуск из корня RAR.";
       show(notice);
-    } finally {
-      running=false;stopRequested=false;progress="";treePhase="";treeFrame=null;render();
+    }finally{
+      running=false;stopRequested=false;progress="";treePhase="";treeFrame=null;
+      render();
     }
   }
 
