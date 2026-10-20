@@ -71,9 +71,15 @@ async function claim(r,s,scope,id,name,folder){
   assert(!br.worker.state.downloads["101"]);
   // A Yandex download from the old tab cannot be claimed by the new tab.
   const oldTab=make(252,11,"same.txt");
-  assert(await r.created(oldTab));
-  assert.equal((await r.determine(oldTab)).filename,"Сборник.rar/same.txt");
+  assert.equal(await r.created(oldTab),false);
+  assert.equal((await r.determine(oldTab)).handled,false);
   assert(!br.worker.state.downloads["252"],"Old tab must not leak into newer archive");
+  const lateDone={...oldTab,state:"complete",bytesReceived:100,
+    filename:"C:\\Downloads\\same.txt"};
+  assert(await r.changed(252,lateDone));
+  const unassigned=(await r.report(second,b)).unattributedBrowserDownloads;
+  assert(unassigned.some(x=>x.id===252&&x.actualSavedFullPath===lateDone.filename),
+    "Quarantined downloads must retain their real browser paths");
   // New service worker reconstructs BOTH archive sessions from local registry.
   const reloaded=router();
   await reloaded.ready;
