@@ -401,15 +401,18 @@ class HarvestWorker {
       !ownReport({filename:row.serverReportedName||row.browserName||row.actualBrowserName||""},this.safeRoot));
     return {ok:true,phase:this.state.phase,batchId:this.state.batchId,
       total:this.state.sourcePathsCount,requested:requests.length,
-      clickDispatchCount:requests.filter(r=>Number(r.dispatchAt)>0).length,
+      clickDispatchCount:requests.reduce((n,r)=>n+(Number(r.dispatchAt)>0?1:0)+
+        (r.retryHistory?.length||0),0),
       clickDispatchAttempts:requests.reduce((sum,r)=>sum+
-        (Number(r.dispatchAt)>0?1:0)+(r.noClickHistory?.length||0),0),
+        (Number(r.dispatchAt)>0?1:0)+(r.noClickHistory?.length||0)+
+        (r.retryHistory?.length||0),0),
       notClickedCount:requests.filter(r=>r.state==="not-clicked").length,
       safeToRetryLookupCount:requests.filter(isSafeToRetryLookup).length,
       retryableCount:requests.filter(r=>isSafeToRetryLookup(r)||
         isSafeToRetryInterrupted(r,this.state.downloads)).length,
       retryClickCount:requests.reduce((n,r)=>n+Number(r.retryCount||0),0),
-      clickCount:requests.filter(r=>Number(r.clickConfirmedAt)>0).length,
+      clickCount:requests.reduce((n,r)=>n+(Number(r.clickConfirmedAt)>0?1:0)+
+        (r.retryHistory?.length||0),0),
       downloadStartedCount:rows.length,
       downloadCompletedCount:rows.filter(r=>r.state==="complete").length,
       downloadInterruptedCount:rows.filter(r=>r.state==="interrupted").length,
