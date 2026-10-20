@@ -78,7 +78,10 @@ async function complete(record,status,reason,item){
   ledger[record.key]={
     state:status,reason:String(reason||"").slice(0,160),
     bytes:Number(item?.bytesReceived)||0,time:new Date().toISOString(),
-    downloadId:item?.id??record.downloadId,target:record.target
+    downloadId:item?.id??record.downloadId,target:record.target,
+    // Keep identity even on wrong-path / interrupted completion. Otherwise
+    // a later same-name file in another folder may be incorrectly captured.
+    filename:record.filename,started:record.started,token:record.token
   };
   await chrome.storage.local.set({[LEDGER_KEY]:ledger});
   delete watchers[String(record.tabId)];
