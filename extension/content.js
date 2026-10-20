@@ -111,13 +111,13 @@
     panel=document.createElement("section");
     panel.id="rr-recovery-panel";
     panel.innerHTML = [
-      '<header><strong>RAR Rescue v0.8</strong><button id="rr-close" title="Закрыть">×</button></header>',
+      '<header><strong>RAR Rescue v0.9</strong><button id="rr-close" title="Закрыть">×</button></header>',
       '<p>Диск 2.rar — 1286 объектов, включая папки. Полное восстановление сохраняет пути и ведёт журнал.</p>',
       '<div class="rr-actions"><button id="rr-scan">1. Найти файлы</button><button id="rr-check">2. Учесть скачанный README</button></div>',
       '<div class="rr-actions"><button id="rr-native">3. Нативный тест README</button></div>',
       '<div class="rr-actions"><button id="rr-pilot">Проверить автоматический клик</button></div>',
       '<p id="rr-status" role="status"></p><p id="rr-found"></p>',
-      '<label>Путь открытой папки внутри архива (в корне оставь пустым)<input id="rr-folder" type="text" placeholder="например, HELP" autocomplete="off"></label>',
+      '<label>Путь только для ручных проверок (при автоматической загрузке определяется из карты)<input id="rr-folder" type="text" placeholder="для корня оставить пустым" autocomplete="off"></label>',
       '<div class="rr-actions"><button id="rr-inventory">4. Обойти все папки</button><button id="rr-stop">Остановить</button></div>',
       '<div class="rr-actions"><button id="rr-nested">5. Проверить 2 вложенных файла</button></div>',
       '<p id="rr-nested-plan"></p>',
@@ -299,6 +299,8 @@
       armed=true;
       action=await inFrame(frameId,{
         kind:"RR_SENSOR_TRIGGER",name,pilot:pilotMode,allowLocate:Boolean(subfolder),
+        verifyNavigation:treePhase==="nested-pilot" || treePhase==="download",
+        expectedFolder:subfolder,
         approvedMode:approvedMode?.mode||null,
         approvedSlots:approvedMode?.slots??null
       });
@@ -562,100 +564,100 @@
    * directories. Uses the same full-tree crawler as actual recovery, but
    * never starts another file until the browser confirmed a previous one.
    */
+  function directoryManifestForNavigator(){
+    if(!tree?.complete || !tree.directories)throw new Error("Нет завершённой карты архива");
+    return Object.values(tree.directories).map(dir=>({
+      path:dir.path,entries:dir.entries.map(x=>({name:x.name,kind:x.kind}))
+    }));
+  }
+  async function beginKnownPathNavigation(frameId){
+    const nav=await inFrame(frameId,{kind:"RR_SENSOR_NAV_START",
+      directories:directoryManifestForNavigator()});
+    if(!nav.ok)throw new Error(nav.error||"Не удалось подтвердить корень");
+    show("Адресная навигация: проверен корень; ненужные каталоги обходиться не будут.");
+    return nav;
+  }
+  async function goToKnownDirectory(frameId,path){
+    const nav=await inFrame(frameId,{kind:"RR_SENSOR_NAV_GOTO",path});
+    if(!nav.ok)throw new Error(nav.error||"Неизвестная ошибка перехода");
+    return nav;
+  }
+
   async function acceptNestedPaths(){
     if(running || !approved || !tree?.complete || tree.nestedPilot?.passed)return;
     const frame=bestFrame();
-    if(!frame || frame.frameId!==approved.frameId) {
-      notice="Открой корень того же RAR и заново проверь автоматический клик.";
+    if(!frame || frame.frameId!==approved.frameId){
+      notice="Открой корень этого RAR и заново проверь автоматический клик.";
       show(notice);return;
     }
     let plan;
-    try {
-      const local=await countDownloads();
-      plan=RarRescuePlan.selectTwo(tree,local);
-      if(!plan.ok)throw new Error(plan.error||"Нет двух подходящих файлов");
-    }catch(error){notice="Не могу запустить двойную приёмку: "+error.message;show(notice);return;}
+    try{
+      const ledger=await countDownloads();
+      plan=RarRescuePlan.selectTwo(tree,ledger);
+      if(!plan.ok)throw new Error(plan.error||"Нет подходящих файлов");
+    }catch(error){
+      notice="Двухфайловая проверка не запущена: "+error.message;show(notice);
+      return;
+    }
     running=true;stopRequested=false;treePhase="nested-pilot";treeFrame=frame.frameId;
     nestedPilotPlan=plan;
-    const confirmed=new Set();
-    tree.nestedPilot={passed:false,status:"running",
-      startedAt:new Date().toISOString(),files:plan.files.map(f=>f.sourcePath),
-      sameBasename:plan.sameBasename,verifiedPaths:[]};
+    const confirmed=[];
+    tree.nestedPilot={passed:false,status:"running",startedAt:new Date().toISOString(),
+      files:plan.files.map(f=>f.sourcePath),sameBasename:plan.sameBasename,verifiedPaths:[]};
     await saveTree();
-    notice="Проверяю два вложенных пути: "+plan.files.map(f=>f.sourcePath).join(" и ")+
-      ". Каждый файл будет запрошен только один раз.";
+    notice="Адресно проверяю только две нужные папки: "+
+      plan.files.map(f=>f.folder).join(" и ")+".";
     show(notice);
-    try {
-      let item=await inFrame(frame.frameId,{kind:"RR_SENSOR_CRAWL_BEGIN"});
-      if(!item.ok)throw new Error(item.error||"Нужно открыть корень RAR");
-      for(let step=0;step<EXPECTED_OBJECTS*3 && !stopRequested;step++){
-        if(item.event==="directory"){
-          const manifestDir=tree.directories[item.path];
-          if(!manifestDir)throw new Error("Нет каталога в манифесте: "+item.path);
-          const expected=manifestDir.entries.map(x=>x.kind+"|"+x.name).sort();
-          const actual=(item.items||[]).map(x=>x.kind+"|"+x.name).sort();
-          if(JSON.stringify(actual)!==JSON.stringify(expected))
-            throw new Error("Содержимое каталога изменилось: "+(item.path||"[корень]"));
-          for(const selected of plan.files.filter(f=>f.folder===item.path)){
-            if(stopRequested)break;
-            if(confirmed.has(selected.sourcePath))continue;
-            if(!(item.items||[]).some(x=>x.kind==="file" && x.name===selected.name))
-              throw new Error("Не найден выбранный файл: "+selected.sourcePath);
-            const ledger=await countDownloads();
-            const key="Disk-2.rar/"+selected.sourcePath;
-            if(["downloaded","armed","awaiting","needs-review"].includes(ledger[key]?.state))
-              throw new Error("Этот путь уже скачан или ещё обрабатывается: "+selected.sourcePath);
-            const record=tree.files[selected.sourcePath];
-            progress="Вложенный файл "+(confirmed.size+1)+"/"+NESTED_PILOT_LIMIT+
-              ": "+selected.sourcePath;
-            render();
-            const result=await retryDownload(frame.frameId,selected.name,false,approved,1,selected.folder);
-            record.attempts=(record.attempts||0)+1;
-            record.status=result.state==="downloaded"?"downloaded":"needs-review";
-            record.bytes=Number(result.bytes)||0;
-            record.error=result.state==="downloaded"?"":String(result.reason||result.state).slice(0,160);
-            if(result.state==="downloaded"){
-              confirmed.add(selected.sourcePath);
-              tree.nestedPilot.verifiedPaths.push(selected.sourcePath);
-              await saveTree();
-              show("Подтверждён исходный путь: "+selected.sourcePath+
-                " ("+(result.bytes||0)+" байт)");
-              await sleep(1500);
-            } else {
-              await saveTree();
-              throw new Error("Загрузка не подтверждена: "+selected.sourcePath+
-                " — "+String(result.reason||result.state).slice(0,120));
-            }
-          }
-        }
-        if(stopRequested)break;
-        item=await inFrame(frame.frameId,{kind:"RR_SENSOR_CRAWL_STEP"});
-        if(!item.ok)throw new Error((item.path||"")+" "+(item.error||"Не удалось вернуться по дереву"));
-        if(item.event==="complete"){
-          if(confirmed.size!==NESTED_PILOT_LIMIT ||
-            plan.files.some(x=>!confirmed.has(x.sourcePath)))
-            throw new Error("Получены не все два тестовых файла; загружать остальное рано");
-          tree.nestedPilot={
-            passed:true,status:"passed",files:plan.files.map(x=>x.sourcePath),
-            sameBasename:plan.sameBasename,confirmedAt:new Date().toISOString()
-          };
-          await saveTree();
-          notice="Два файла из разных вложенных папок сохранены по ожидаемым путям. "+
-            (plan.sameBasename?"Совпадающие имена проверены. ":"")+
-            "Просмотрщик вернулся в корень. Полная очередь доступна.";
-          show(notice);
-          return;
-        }
+    try{
+      await beginKnownPathNavigation(frame.frameId);
+      for(const selected of plan.files){
+        if(stopRequested)throw new Error("Остановлено пользователем после текущего файла");
+        const nav=await goToKnownDirectory(frame.frameId,selected.folder);
+        progress="Нужная папка: "+selected.folder+" ("+nav.entered+
+          " входов, "+nav.backed+" возвратов)";render();
+        const row=tree.directories[selected.folder]?.entries.find(x=>
+          x.name===selected.name && x.kind==="file");
+        if(!row)throw new Error("Файл отсутствует в манифесте: "+selected.sourcePath);
+        const ledger=await countDownloads();
+        const key="Disk-2.rar/"+selected.sourcePath;
+        if(["downloaded","armed","awaiting","needs-review"].includes(ledger[key]?.state))
+          throw new Error("Этот путь уже обработан или ожидает проверки: "+selected.sourcePath);
+        const result=await retryDownload(frame.frameId,selected.name,false,approved,1,selected.folder);
+        const record=tree.files[selected.sourcePath];
+        record.attempts=(record.attempts||0)+1;
+        record.status=result.state==="downloaded"?"downloaded":"needs-review";
+        record.bytes=Number(result.bytes)||0;
+        record.error=result.state==="downloaded"?"":String(result.reason||result.state).slice(0,160);
+        await saveTree();
+        if(result.state!=="downloaded")
+          throw new Error("Не подтверждено скачивание "+selected.sourcePath+": "+
+            String(result.reason||result.state).slice(0,120));
+        confirmed.push(selected.sourcePath);
+        tree.nestedPilot.verifiedPaths=[...confirmed];
+        await saveTree();
+        show("Подтверждено "+selected.sourcePath+" ("+(result.bytes||0)+" байт)");
+        if(confirmed.length<plan.files.length)await sleep(1500);
       }
-      throw new Error(stopRequested?
-        "Приёмка остановлена пользователем. Проверенные файлы сохранены.":
-        "Не удалось завершить возврат к корню после двух файлов");
+      if(confirmed.length!==NESTED_PILOT_LIMIT)
+        throw new Error("Не получены оба контрольных файла");
+      const returned=await goToKnownDirectory(frame.frameId,"");
+      tree.nestedPilot={
+        passed:true,status:"passed",files:plan.files.map(x=>x.sourcePath),
+        sameBasename:plan.sameBasename,confirmedAt:new Date().toISOString(),
+        navigation:{entered:returned.entered,backed:returned.backed,
+          verified:returned.verified}
+      };
+      await saveTree();
+      notice="Два вложенных файла получены. Открыто "+
+        returned.entered+" каталогов вместо полного обхода 87. "+
+        "Проверен возврат в корень. Полная очередь доступна.";
+      show(notice);
     }catch(error){
       tree.nestedPilot={...tree.nestedPilot,passed:false,status:"needs-review",
         error:String(error.message||error).slice(0,220)};
       await saveTree();
-      notice="Вложенная приёмка остановлена: "+error.message+
-        ". Прежде чем повторять — проверь статусы и вернись в корень.";
+      notice="Двухфайловая приёмка остановлена: "+error.message+
+        ". Проверенные файлы остаются в журнале; не повторяй их скачивание.";
       show(notice);
     }finally{
       running=false;stopRequested=false;treePhase="";treeFrame=null;
@@ -668,90 +670,102 @@
     if(running || !approved || !tree || !tree.scanned || !tree.complete ||
       tree.nestedPilot?.passed!==true)return;
     const frame=bestFrame();
-    if(!frame||frame.frameId!==approved.frameId)return;
+    if(!frame || frame.frameId!==approved.frameId)return;
+    let plan;
+    try{
+      const ledger=await countDownloads();
+      plan=RarRescuePlan.pendingDirectories(tree,ledger);
+      if(!plan.ok)throw new Error(plan.error+
+        (plan.blocked?.length?": "+plan.blocked.slice(0,3).join(", "):""));
+    }catch(error){
+      notice="Нельзя начинать восстановление: "+String(error.message||error);
+      show(notice);return;
+    }
+    if(plan.pending===0){
+      notice="По журналу новых файлов не осталось. Сохрани итоговый отчёт.";
+      show(notice);return;
+    }
     running=true;stopRequested=false;treePhase="download";treeFrame=frame.frameId;
-    notice="Скачиваю файлы по исходным относительным путям. Оставь просмотрщик открытым.";
+    notice="Ожидают "+plan.pending+" файлов в "+plan.visitedDirectoryCount+
+      " каталогах; пропущено уже готовых: "+plan.skipped+
+      ". Остальные каталоги посещать не буду.";
     show(notice);
-    try {
-      let item=await inFrame(frame.frameId,{kind:"RR_SENSOR_CRAWL_BEGIN"});
-      if(!item.ok)throw new Error(item.error||"Не открыт корень RAR");
-      for(let iteration=0;iteration<EXPECTED_OBJECTS*3 && !stopRequested;iteration++){
-        if(item.event==="directory"){
-          const dir=tree.directories[item.path];
-          if(!dir)throw new Error("Каталог отсутствует в манифесте: "+item.path);
-          const expected=dir.entries.map(v=>v.kind+"|"+v.name).sort();
-          const actual=(item.items||[]).map(v=>v.kind+"|"+v.name).sort();
-          if(JSON.stringify(expected)!==JSON.stringify(actual))
-            throw new Error("Содержимое изменилось: "+(item.path||"[корень]"));
-          for(const entry of item.items||[]){
-            if(stopRequested)break;
-            if(entry.kind!=="file")continue;
-            const original=(item.path?item.path+"/":"")+entry.name;
-            const record=tree.files[original];
-            if(!record)throw new Error("Файл отсутствует в манифесте: "+original);
-            const local=await countDownloads();
-            const recordedState=local[keyFor(entry.name,item.path)]?.state;
-            if(recordedState==="downloaded"){
-              record.status="downloaded";
-              record.bytes=Number(local[keyFor(entry.name,item.path)]?.bytes)||record.bytes||0;
-              record.error="";
-              await saveTree();continue;
-            }
-            if(["armed","awaiting","needs-review"].includes(recordedState)) {
-              record.status="needs-review";
-              record.error="Previously requested but not confirmed; do not duplicate";
-              await saveTree();
-              throw new Error("Предыдущая загрузка "+original+" не разрешена. Сначала проверь её в браузере.");
-            }
-            progress=original+" · восстановление";render();
-            const result=await retryDownload(frame.frameId,entry.name,false,approved,3,item.path);
-            record.attempts=(record.attempts||0)+1;
-            record.status=result.state==="downloaded"?"downloaded":
-              result.state==="failed"?"failed":"needs-review";
-            record.bytes=Number(result.bytes)||0;
-            record.error=result.state==="downloaded"?"":String(result.reason||result.state).slice(0,180);
-            await saveTree();
-            if(result.state!=="downloaded"){
-              stopRequested=true;
-              notice="Исход "+original+" не подтверждён. Очередь остановлена без повторного скачивания.";
-              show(notice);
-            }
-            if(!stopRequested)await sleep(2500);
-          }
-        }
+    try{
+      await beginKnownPathNavigation(frame.frameId);
+      for(const group of plan.groups){
         if(stopRequested)break;
-        item=await inFrame(frame.frameId,{kind:"RR_SENSOR_CRAWL_STEP"});
-        if(!item.ok)throw new Error((item.path||"")+" "+(item.error||"Ошибка перехода"));
-        if(item.event==="complete"){
-          const counts={downloaded:0,failed:0,pending:0,needsReview:0};
-          for(const file of Object.values(tree.files)){
-            if(file.status==="downloaded")counts.downloaded++;
-            else if(file.status==="failed")counts.failed++;
-            else if(file.status==="needs-review")counts.needsReview++;
-            else counts.pending++;
+        const nav=await goToKnownDirectory(frame.frameId,group.path);
+        progress="Каталог "+(group.path||"[корень]")+
+          " · переходов в папки: "+nav.entered+", возвратов: "+nav.backed;
+        render();
+        for(const file of group.files){
+          if(stopRequested)break;
+          const record=tree.files[file.sourcePath];
+          if(!record)throw new Error("Нет файла в манифесте: "+file.sourcePath);
+          const ledger=await countDownloads();
+          const key="Disk-2.rar/"+file.sourcePath;
+          const oldState=ledger[key]?.state;
+          if(oldState==="downloaded"){
+            record.status="downloaded";
+            record.bytes=Number(ledger[key]?.bytes)||record.bytes||0;
+            record.error="";
+            await saveTree();
+            continue;
           }
-          tree.lastRecovery={finishedAt:new Date().toISOString(),counts};
+          if(["armed","awaiting","needs-review","failed"].includes(oldState))
+            throw new Error("Незавершённый запрос требует проверки: "+file.sourcePath);
+          progress="Скачивание "+file.sourcePath;render();
+          const result=await retryDownload(frame.frameId,file.name,false,approved,1,file.folder);
+          record.attempts=(record.attempts||0)+1;
+          record.status=result.state==="downloaded"?"downloaded":
+            result.state==="failed"?"failed":"needs-review";
+          record.bytes=Number(result.bytes)||0;
+          record.error=result.state==="downloaded"?"":String(result.reason||result.state).slice(0,180);
           await saveTree();
-          notice="Проход завершён. Получено: "+counts.downloaded+
-            ", ошибок: "+counts.failed+", требуют проверки: "+counts.needsReview+
-            ", ещё не обработано: "+counts.pending+
-            ". Скачай JSON-отчёт с путями.";
-          show(notice);
-          return;
+          if(result.state!=="downloaded"){
+            stopRequested=true;
+            notice="Неопределённый исход "+file.sourcePath+
+              ". Очередь остановлена без повторного запроса.";
+            show(notice);
+          }
+          if(!stopRequested)await sleep(2500);
         }
-        if(iteration===EXPECTED_OBJECTS*3-1)throw new Error("Превышен лимит этапов восстановления");
       }
-      notice="Восстановление остановлено. Уже полученные файлы остаются в каталоге загрузок; вернись в корень для продолжения.";
+      if(stopRequested){
+        notice="Восстановление остановлено. Завершённые файлы сохранены в журнале. "+
+          "Возобновление начнётся с оставшихся путей.";
+        show(notice);
+        return;
+      }
+      const nav=await goToKnownDirectory(frame.frameId,"");
+      const counts={downloaded:0,failed:0,pending:0,needsReview:0};
+      for(const file of Object.values(tree.files)){
+        if(file.status==="downloaded")counts.downloaded++;
+        else if(file.status==="failed")counts.failed++;
+        else if(file.status==="needs-review")counts.needsReview++;
+        else counts.pending++;
+      }
+      tree.lastRecovery={
+        finishedAt:new Date().toISOString(),counts,
+        navigation:{entered:nav.entered,backed:nav.backed,verified:nav.verified},
+        directoriesWithWork:plan.visitedDirectoryCount,
+        initiallyPending:plan.pending
+      };
+      await saveTree();
+      notice="Проход завершён. Получено: "+counts.downloaded+
+        ", ошибок: "+counts.failed+", требуют проверки: "+counts.needsReview+
+        ", ожидают: "+counts.pending+". Каталогов открыто: "+nav.entered+
+        " вместо полного обхода дерева.";
       show(notice);
-    } catch(error){
-      (tree.recoveryIssues ||= []).push({
-        path:"",reason:"recovery-interrupted",detail:String(error.message||error).slice(0,180)
+    }catch(error){
+      (tree.recoveryIssues||=[]).push({
+        reason:"recovery-interrupted",detail:String(error.message||error).slice(0,180)
       });
       await saveTree();
       notice="Восстановление остановлено: "+error.message+
-        ". Подробности в JSON. Не удаляй уже скачанные файлы.";
+        ". Проверенные файлы не перезаписываются; если просмотрщик во вложенной папке — вернись в корень.";
       show(notice);
-    } finally {
+    }finally{
       running=false;stopRequested=false;treePhase="";treeFrame=null;progress="";
       await countDownloads();render();
     }
