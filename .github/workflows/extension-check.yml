@@ -6,6 +6,7 @@ on:
       - "tools/test_archive_fixture.py"
       - "tools/test_recursive_fixture.py"
       - "tools/test_direct_navigation_fixture.py"
+      - "tools/test_virtual_518_fixture.py"
       - ".github/workflows/extension-check.yml"
   pull_request:
     paths:
@@ -57,6 +58,7 @@ jobs:
           python tools/test_archive_fixture.py
           python tools/test_recursive_fixture.py
           python tools/test_direct_navigation_fixture.py
+          python tools/test_virtual_518_fixture.py
       - name: Upload ready-to-install extension directory
         uses: actions/upload-artifact@v4
         with:
