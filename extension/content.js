@@ -110,6 +110,7 @@
         " · тайм-аутов (120 с): "+h.timedOutCount+
         " · расхождений: "+h.mismatchCount+
         " · без привязки: "+h.unmatchedDownloadCount+
+         " · повторов: "+(h.retryClickCount||0)+
         " · не нажато: "+h.notClickedCount+" · можно повторить: "+h.safeToRetryLookupCount+" · позиций учтено: "+h.requested+"/"+h.total) :
         "Один клик на файл; ожидание до 120 секунд. Сохраняются исходные каталоги и реальные имена Яндекса.";
     }
@@ -1256,7 +1257,7 @@
         // Yandex sometimes delivers a file after the earlier wait timed out.
         // Such a late success must be recorded but must never trigger re-click.
         notice="Запоздалый результат: "+(message.key||"файл")+" — "+message.state;
-        if(tree && message.key?.startsWith("Disk-2.rar/")) {
+        if(!scope && tree && message.key?.startsWith("Disk-2.rar/")) {
           const path=message.key.slice("Disk-2.rar/".length);
           if(tree.files[path]) {
             tree.files[path].status=message.state==="downloaded"?"downloaded":"needs-review";
