@@ -5,7 +5,8 @@
   const LEDGER_KEY = "rr_ledger";
   const NESTED_PILOT_LIMIT = 2;
   const TREE_KEY = "rr_tree_v05";
-  const EXPECTED_OBJECTS = 1286;
+  const EXPECTED_OBJECTS = 1286; // legacy-only diagnostic
+  const MAX_CRAWL_EVENTS = 100000;
   const ARCHIVE = "Disk-2.rar";
   const sleep = ms => new Promise(resolve => setTimeout(resolve,ms));
   let panel = null, folder = "", frames = new Map(), scanId = "", scanning = false;
@@ -24,6 +25,33 @@
   let treeFrame = null;
   let harvestSummary = null;
   let harvestLoopActive = false;
+  let scope = null;
+  function archiveRoot(){return scope?.outputRoot||ARCHIVE;}
+  function safeArchiveTitle(){
+    const topTitle=String(document.title||"").split(/\s+[—|]\s+/)[0].trim();
+    const viewerTitle=String(bestFrame()?.archiveName||"").trim();
+    return RarRescueArchiveScope.archiveName(viewerTitle||topTitle);
+  }
+  async function ensureArchiveScope(){
+    const detected=RarRescueArchiveScope.fromYandexPublicLink(location.href,safeArchiveTitle());
+    if(scope&&!RarRescueArchiveScope.sameScope(scope,detected))
+      throw Error("The active archive changed during recovery");
+    scope=detected;
+    const store=await chrome.storage.local.get([scope.treeStorageKey,"rr_output_owners_v15"]);
+    const owners=store.rr_output_owners_v15||{};
+    const rootKey=scope.outputRoot.normalize("NFC").toLowerCase();
+    if(owners[rootKey]&&owners[rootKey]!==scope.scopeId)
+      throw Error("Another archive already owns this output folder");
+    if(!owners[rootKey]){
+      owners[rootKey]=scope.scopeId;
+      await chrome.storage.local.set({rr_output_owners_v15:owners});
+    }
+    if(!tree){
+      const saved=store[scope.treeStorageKey];
+      if(saved?.scopeId===scope.scopeId)tree=saved;
+    }
+    return scope;
+  }
 
   function show(message) {
     events.unshift(new Date().toLocaleTimeString() + " " + message);
@@ -54,8 +82,11 @@
     return state;
   }
   function bestFrame() {
-    const sorted = [...frames.values()].filter(x => x.count > 0)
-      .sort((a,b) => b.count - a.count);
+    const sorted = [...frames.values()].filter(x =>
+      Number.isFinite(Number(x.count))&&Number.isFinite(Number(x.folders))&&
+      (x.host==="docviewer.yandex.ru"||x.host==="docviewer.360.yandex.ru"||
+       Boolean(x.archiveName)))
+      .sort((a,b) => (b.count+b.folders)-(a.count+a.folders));
     return sorted[0] || null;
   }
   function render() {
@@ -89,7 +120,7 @@
       ("Файлы не обнаружены. Ответили кадров: "+entries.length));
     if (el("rr-found")) el("rr-found").textContent = best ?
       "Примеры: "+(best.names || []).slice(0,10).join(", ") :
-      "Нужно открыть содержимое Диск 2.rar и нажать «Найти файлы».";
+      "Открой веб-просмотрщик RAR и нажми «Скачать всё».";
     if (el("rr-progress")) el("rr-progress").textContent = (progress ? progress+" · " : "") +
       notice; // Old strict-ledger counts must not masquerade as new verified downloads.
     if (el("rr-log")) el("rr-log").textContent = events.slice(0,9).join("\n") || "Ожидаю проверки.";
@@ -148,8 +179,8 @@
     panel=document.createElement("section");
     panel.id="rr-recovery-panel";
     panel.innerHTML=[
-      '<header><strong>RAR Rescue v0.14</strong><button id="rr-close" title="Закрыть">×</button></header>',
-      '<p>Диск 2.rar · автоматическая выгрузка всех доступных файлов.</p>',
+      '<header><strong>RAR Rescue</strong><button id="rr-close" title="Закрыть">×</button></header>',
+      '<p>Автоматический обход архива, загрузка и возобновление.</p>',
       '<div class="rr-actions"><button id="rr-harvest">Скачать всё</button></div>',
       '<p id="rr-harvest-count"></p>',
       '<p id="rr-progress" role="status"></p>',
@@ -446,15 +477,16 @@
   async function saveTree() {
     if(!tree)return;
     tree.updatedAt=new Date().toISOString();
-    await chrome.storage.local.set({[TREE_KEY]:tree});
+    if(!scope)throw Error("Archive scope is unknown");
+    await chrome.storage.local.set({[scope.treeStorageKey]:tree});
     render();
   }
 
   function newTree() {
     return {
-      schema:"rar-rescue-tree-v1",
-      archive:"Диск 2.rar",
-      expectedObjects:EXPECTED_OBJECTS,
+      schema:"rar-rescue-tree-v2",
+      scopeId:scope.scopeId,archive:scope.archiveName,
+      expectedObjects:null,
       createdAt:new Date().toISOString(),
       scanned:false,complete:false,observedObjects:0,
       directories:{},files:{},unknown:[],issues:[]
@@ -477,7 +509,7 @@
       const source=(path?path+"/":"")+row.name;
       if(row.kind==="file") {
         let destination;
-        try {destination=RarRescueUtils.relative(path,row.name);}
+        try {destination=RarRescueUtils.relative(path,row.name,archiveRoot());}
         catch(error) {
           tree.issues.push({path:source,reason:"invalid-output-path"});
           continue;
@@ -516,15 +548,23 @@
     for(const path of Object.keys(tree.directories)){
       if(!path)continue;
       let target;
-      try {target=RarRescueUtils.relative(path,"_directory_marker_").toLowerCase();}
+      try {target=RarRescueUtils.relative(path,"_directory_marker_",archiveRoot()).toLowerCase();}
       catch(_){tree.issues.push({path,reason:"unsafe-directory-name"});continue;}
       if(mappedDirs.has(target)&&mappedDirs.get(target)!==path) {
         tree.issues.push({path,reason:"directory-name-collision",
           collidesWith:mappedDirs.get(target)});
       } else mappedDirs.set(target,path);
     }
-    tree.complete=tree.observedObjects===EXPECTED_OBJECTS &&
-      tree.unknown.length===0 && tree.issues.length===0;
+    tree.expectedObjects=tree.observedObjects;
+    tree.complete=tree.unknown.length===0&&tree.issues.length===0;
+    if(tree.complete){
+      try{RarRescueManifest.importManifest(tree,RarRescueUtils,scope);}
+      catch(error){
+        tree.complete=false;
+        tree.issues.push({path:"",reason:"structural-integrity",
+          detail:String(error.message||error).slice(0,180)});
+      }
+    }
   }
 
   async function inventoryTree(){
