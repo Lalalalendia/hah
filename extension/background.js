@@ -20,10 +20,10 @@ function reserveOutputRoot(sender,raw){
   const job=outputReservationQueue.then(async()=>{
     if(!raw||typeof raw.archiveName!=="string"||
        !Number.isInteger(sender?.tab?.id))throw Error("Missing archive identity");
-    const scope=RarRescueArchiveScope.fromYandexPublicLink(
-      sender.tab.url,raw.archiveName);
-    if(scope.scopeId!==raw.scopeId||scope.outputRoot!==raw.outputRoot)
-      throw Error("Archive does not match the current public link");
+    const scope=RarRescueArchiveScope.restoreScope(raw);
+    if(!scope||!RarRescueArchiveScope.matchesTab(scope,sender.tab.url)||
+       scope.outputRoot!==raw.outputRoot)
+      throw Error("Archive identity does not match the current Yandex web viewer");
     const store=await chrome.storage.local.get(OUTPUT_OWNERS_KEY);
     const owners=store[OUTPUT_OWNERS_KEY]||{};
     const root=scope.outputRoot.normalize("NFC").toLowerCase();
