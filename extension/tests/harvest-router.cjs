@@ -126,5 +126,16 @@ async function claim(r,s,scope,id,name,folder){
   assert.equal(stale.invalidTab,false);
   // Scope metadata, source URL and browser download IDs must match owner.
   await assert.rejects(()=>r.bind(first,b),/identity|match/i);
-  console.log("PASS: two simultaneous archives, separate same-name paths, late event ownership, detached quarantine, restart");
+  // Once all capture/tail windows expire, ordinary Yandex browsing must not
+  // produce a permanent local log of unrelated private filenames.
+  for(const worker of restarted.workers.values()){
+    if(worker.state.phase==="collecting")await worker.stop();
+    if(worker.state.phase==="tail")worker.state.tailDeadline=Date.now()-1000;
+  }
+  const beforeLog=local.rr_ambiguous_downloads_v16.length;
+  const privateFile=make(990,999,"personal-document.pdf");
+  assert.equal(await restarted.created(privateFile),false);
+  assert.equal((await restarted.determine(privateFile)).handled,false);
+  assert.equal(local.rr_ambiguous_downloads_v16.length,beforeLog);
+  console.log("PASS: parallel archive tabs, safe late events, restart, quarantine, and no unrelated-download logging after expiry");
 })().catch(error=>{console.error(error.stack||error);process.exitCode=1;});
