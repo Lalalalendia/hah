@@ -71,8 +71,9 @@ async function claim(r,s,scope,id,name,folder){
   assert(!br.worker.state.downloads["101"]);
   // A Yandex download from the old tab cannot be claimed by the new tab.
   const oldTab=make(252,11,"same.txt");
-  assert.equal(await r.created(oldTab),false);
-  assert.equal((await r.determine(oldTab)).handled,false);
+  assert(await r.created(oldTab));
+  assert.equal((await r.determine(oldTab)).filename,"Сборник.rar/same.txt");
+  assert(!br.worker.state.downloads["252"],"Old tab must not leak into newer archive");
   // New service worker reconstructs BOTH archive sessions from local registry.
   const reloaded=router();
   await reloaded.ready;
@@ -82,6 +83,6 @@ async function claim(r,s,scope,id,name,folder){
   assert.equal((await reloaded.bind(first,a)).state.tabId,11);
   assert.equal((await reloaded.bind(second,b)).state.tabId,22);
   // Scope metadata, source URL and browser download IDs must match owner.
-  assert.rejects(()=>r.bind(first,b),/identity|match/i);
+  await assert.rejects(()=>r.bind(first,b),/identity|match/i);
   console.log("PASS: two simultaneous archives, separate same-name paths, late event ownership, detached quarantine, restart");
 })().catch(error=>{console.error(error.stack||error);process.exitCode=1;});
