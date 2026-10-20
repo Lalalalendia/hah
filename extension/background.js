@@ -321,8 +321,17 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       if(key!=="Disk-2.rar/"+(folder?folder+"/":"")+filename)
         throw new Error("Download path identity mismatch");
       const ledger=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY]||{};
-      if(["downloaded","armed","awaiting","needs-review"].includes(ledger[key]?.state))
+      if(["downloaded","armed","awaiting","needs-review","failed"].includes(ledger[key]?.state))
         throw new Error("File already downloaded or its previous click is unresolved; no repeated clicks");
+      const filenameCollision=Object.entries(ledger).find(([priorKey,prior])=>
+        priorKey!==key && priorKey.startsWith("Disk-2.rar/") &&
+        ["armed","awaiting","needs-review","failed"].includes(prior?.state) &&
+        prior.filename &&
+        (sameExpectedFile(filename,prior.filename) ||
+         sameExpectedFile(prior.filename,filename)));
+      if(filenameCollision)
+        throw new Error("Another unresolved source has a matching filename; "+
+          "reconcile it before attempting a different directory");
       if(!ledger[key]) {
         // Survive extension reinstall/import when Chrome already has a valid
         // completed file in the exact destination but the local ledger is empty.
