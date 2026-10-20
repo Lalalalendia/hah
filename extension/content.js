@@ -60,6 +60,8 @@
   }
   const el = id => panel && panel.querySelector("#"+id);
   async function send(message) {
+    if(scope&&message?.kind?.startsWith("RR_HARVEST_")&&!message.scope)
+      message={...message,scope};
     const response = await chrome.runtime.sendMessage(message);
     if (!response || !response.ok) throw new Error(response?.error || "Расширение не ответило");
     return response;
