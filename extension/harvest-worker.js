@@ -3,7 +3,7 @@
  * Crucial invariant: NEVER rename an unexpected server filename to the
  * viewer's requested filename. Store the browser-reported basename and
  * separately log source-path attribution as evidence, not verified identity.
- * All files go to ONE recovery folder with the browser-returned name.
+ * All files go straight into the browser Downloads folder, no subfolders.
  */
 (function(root){
 "use strict";
@@ -184,7 +184,7 @@ class RawHarvest {
         return {handled:true,filename:existing.outputRelative,conflictAction:"uniquify"};
       }
       const matched=this.choose(item);
-      const route=this.utils.relative("",safeName);
+      const route=safeName; // Downloads root only: no folders or substitutions
       const record={
         ...(existing||{}),id:item.id,
         browserName:observed||"(browser did not report a name)",
@@ -220,13 +220,8 @@ class RawHarvest {
       record.totalBytes=Number(item?.totalBytes)||0;
       record.completedAt=state==="complete"||state==="interrupted"?
         new Date().toISOString():null;
-      // Chrome may suffix a name on conflict. Only record relative output,
-      // never the absolute path outside the user's recovery directory.
-      const path=String(item?.filename||"").replace(/\\/g,"/");
-      const marker="/YandexRARRecovery/";
-      const idx=path.toLowerCase().lastIndexOf(marker.toLowerCase());
-      record.actualOutputRelative=idx>=0?path.slice(idx+1,idx+350):
-        "(not recorded in YandexRARRecovery)";
+      // Save only the browser-assigned basename, never the local absolute path.
+      record.actualOutputRelative=basename(item?.filename)||"(unknown)";
       record.actualBrowserName=basename(item?.filename)||record.browserName;
       record.exists=item?.exists!==false;
       if(state==="interrupted")record.error=String(item?.error||"interrupted").slice(0,100);
