@@ -109,7 +109,7 @@ function pendingDirectories(tree,ledger={}){
   return {
     ok:true,groups,pending,skipped,
     blocked,blockedCount:blocked.length,
-    collisionBlocked:collisionBlocked.slice(0,100),
+    collisionBlocked,
     collisionBlockedCount:collisionBlocked.length,
     held:blocked.length+collisionBlocked.length,
     visitedDirectoryCount:groups.length,
