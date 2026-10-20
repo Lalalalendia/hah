@@ -139,7 +139,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     const tabId = sender.tab.id;
     if (message.kind === "RR_SENSOR_REPORT" || message.kind === "RR_SENSOR_PICKED") {
       const allowed = message.kind === "RR_SENSOR_REPORT" ?
-        ["kind", "requestId", "host", "names", "count", "folders", "unknown", "rowSelector", "example", "iconSamples", "knownReadme"] :
+        ["kind", "requestId", "host", "names", "count", "folders", "unknown", "rowSelector", "example", "iconSamples", "archiveName"] :
         ["kind", "host", "found", "name", "ancestry", "clickedTag", "count"];
       const sanitized = {};
       for (const field of allowed) if (Object.prototype.hasOwnProperty.call(message, field)) sanitized[field] = message[field];
