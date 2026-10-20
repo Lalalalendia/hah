@@ -246,5 +246,17 @@ try:
     fresh=call("begin")
     assert fresh["ok"] and fresh["path"]=="" and len(fresh["items"])==1,fresh
     print("PASS: accepts a markerless arbitrary archive root")
+    # An untrusted folder name must not become an object prototype or
+    # escape into an unexpected browser path.
+    drv.execute_script("""
+      trees['']=[['__proto__','folder']];window.currentPath='';draw();
+      window.__crawler=new window.RarRescueCrawler(document,window.RarRescueDOM,
+        {delay:()=>Promise.resolve()});
+    """)
+    assert call("begin")["ok"]
+    blocked=call("step")
+    assert not blocked["ok"] and "unsafe-folder-name" in blocked["error"],blocked
+    assert drv.execute_script("return window.currentPath")==""
+    print("PASS: prototype-shaped folder name cannot trigger unsafe viewer traversal")
 finally:
     drv.quit()
