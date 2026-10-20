@@ -51,12 +51,12 @@ const fillerDone=Object.fromEntries(filler.map(([folder,name])=>[
   "Disk-2.rar/"+folder+"/"+name,{state:"downloaded",bytes:3}
 ]));
 all.files["HELP/FIRST.TXT"].status="downloaded";
-const ledger={
+const recoveryLedger={
   ...fillerDone,
   "Disk-2.rar/HELP/FIRST.TXT":{state:"downloaded"},
   "Disk-2.rar/PLUGINS/CONFIG.XML":{state:"downloaded"}
 };
-const work=ctx.RarRescuePlan.pendingDirectories(all,ledger);
+const work=ctx.RarRescuePlan.pendingDirectories(all,recoveryLedger);
 assert(work.ok,JSON.stringify(work));
 assert.equal(work.pending,2);
 assert.equal(work.visitedDirectoryCount,2);
@@ -66,7 +66,7 @@ assert.equal(work.accounted,1199);
 assert.deepEqual(Array.from(work.groups,g=>g.path),["HELP","REPORT"]);
 assert(!work.groups.some(g=>g.path==="PLUGINS"));
 const partlyBlocked=ctx.RarRescuePlan.pendingDirectories(all,{
-  ...ledger,
+  ...recoveryLedger,
   "Disk-2.rar/HELP/SECOND.XML":{
     state:"needs-review",reason:"Yandex has not confirmed transfer"
   }
