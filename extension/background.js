@@ -276,8 +276,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     }
     if(message.kind==="RR_HARVEST_REPORT") {
       if(sender.frameId!==0)throw new Error("Only parent frame can export raw capture");
-      const worker=await rawRouter.bind(sender,message.scope||null);
-      respond(await worker.report());return;
+      respond(await rawRouter.report(sender,message.scope||null));return;
     }
     if(message.kind==="RR_PREPARE_RESUME") {
       if(sender.frameId!==0)throw new Error("Only main recovery panel can inspect or defer transfers");
