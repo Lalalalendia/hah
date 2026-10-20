@@ -30,6 +30,7 @@ window.currentPath="";
 window.navEvents=[];
 function draw() {
   const listing=document.getElementById("listing");
+  document.querySelector('[class*="archiveHeader_"]').setAttribute("data-archive-path",window.currentPath||"/");
   listing.replaceChildren();
   for(const [name,kind] of trees[window.currentPath] || []) {
     const row=document.createElement("div");
@@ -111,7 +112,13 @@ try:
     drv.execute_script("document.getElementById('back').remove()")
     drv.execute_script("window.__crawler=new window.RarRescueCrawler(document,window.RarRescueDOM,{delay:()=>Promise.resolve()})")
     result=call("begin")
-    assert not result["ok"] and result["error"]=="not-at-known-rar-root",result
-    print("PASS: rejects starting recovery inside an arbitrary subfolder")
+    assert not result["ok"] and result["error"]=="not-at-archive-root",result
+    print("PASS: rejects a non-root viewer breadcrumb independent of member names")
+    # A different public RAR may have zero of Disk-2's special file names.
+    drv.execute_script("window.currentPath='';trees['']=[['arbitrary.dat','file']];draw()")
+    drv.execute_script("window.__crawler=new window.RarRescueCrawler(document,window.RarRescueDOM,{delay:()=>Promise.resolve()})")
+    fresh=call("begin")
+    assert fresh["ok"] and fresh["path"]=="" and len(fresh["items"])==1,fresh
+    print("PASS: accepts a markerless arbitrary archive root")
 finally:
     drv.quit()
