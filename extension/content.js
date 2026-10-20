@@ -73,10 +73,14 @@
     if(el("rr-harvest-count")){
       const h=harvestSummary;
       el("rr-harvest-count").textContent=h ?
-        ("Запрошено файлов: "+h.requested+" · завершилось загрузок: "+h.completed+
-        " · другое имя: "+h.differentNames+" · не удалось связать: "+h.unattributed+
-        " · ожидает: "+h.unresolved) :
-        "Проверит все 1199 позиций; при повторном запуске пропустит уже нажатые в этой версии. Файлы сохраняются в «Загрузки» без подпапок, с именами Яндекса.";
+        ("Нажатий: "+h.clickCount+" · команд клика: "+h.clickDispatchCount+
+        " · загрузок начато: "+h.downloadStartedCount+
+        " · завершено: "+h.downloadCompletedCount+
+        " · тайм-аутов (120 с): "+h.timedOutCount+
+        " · расхождений: "+h.mismatchCount+
+        " · без привязки: "+h.unmatchedDownloadCount+
+        " · позиций учтено: "+h.requested+"/"+h.total) :
+        "Один клик на файл; ожидание до 120 секунд. Сохраняются исходные каталоги и реальные имена Яндекса.";
     }
     if (el("rr-status")) el("rr-status").textContent = scanning ?
       "Сканирование кадров браузера..." :
@@ -87,7 +91,7 @@
       "Примеры: "+(best.names || []).slice(0,10).join(", ") :
       "Нужно открыть содержимое Диск 2.rar и нажать «Найти файлы».";
     if (el("rr-progress")) el("rr-progress").textContent = (progress ? progress+" · " : "") +
-      notice+" · успешно: "+downloaded+", ошибки: "+failed;
+      notice; // Old strict-ledger counts must not masquerade as new verified downloads.
     if (el("rr-log")) el("rr-log").textContent = events.slice(0,9).join("\n") || "Ожидаю проверки.";
     if (el("rr-resume-status")){
       const p=tree?.complete ? RarRescuePlan.pendingDirectories(tree,ledgerSnapshot) : null;
@@ -144,13 +148,13 @@
     panel=document.createElement("section");
     panel.id="rr-recovery-panel";
     panel.innerHTML=[
-      '<header><strong>RAR Rescue v0.12</strong><button id="rr-close" title="Закрыть">×</button></header>',
+      '<header><strong>RAR Rescue v0.13</strong><button id="rr-close" title="Закрыть">×</button></header>',
       '<p>Диск 2.rar · автоматическая выгрузка всех доступных файлов.</p>',
       '<div class="rr-actions"><button id="rr-harvest">Скачать всё</button></div>',
       '<p id="rr-harvest-count"></p>',
       '<p id="rr-progress" role="status"></p>',
       '<pre id="rr-log"></pre>',
-      '<small>Сохраняется исходная структура в «Загрузки/Disk-2.rar», без дополнительных служебных папок. Имена — ровно те, что вернул Яндекс, с автоматическими суффиксами браузера при совпадениях. Полный журнал сохраняется автоматически.</small>'
+      '<small>Структура исходных каталогов сохраняется. Максимум 120 секунд ожидания на файл, потом следующий без повторного клика. Все конфликты записываются полными путями.</small>'
     ].join("");
     document.body.append(panel);
     el("rr-close").addEventListener("click",()=>{panel.remove();panel=null;});
@@ -172,7 +176,7 @@
     scanning=false;
     const best=bestFrame();
     notice=best ?
-      ("Обнаружено "+best.count+" файлов в окне Яндекса. Теперь нажми «Проверить README.TXT».") :
+      ("Обнаружено "+best.count+" файлов в корне Яндекс RAR. Для начала нажми «Скачать всё».") :
       "Список файлов не получен. Проверь доступ расширения к встроенному docviewer и обнови страницу.";
     show(notice);
   }
@@ -778,7 +782,7 @@
         directories:Object.keys(tree?.directories||{}).length,
         sourcePaths:Object.keys(tree?.files||{})},
       legacyRequests:legacy,
-      note:"Files saved using Yandex/browser-returned basenames in original archive folders under Downloads/Disk-2.rar. Attribution to a clicked source is not proof of file identity. Compare downloads later."
+      note:"Each click has a separate ID and a 120-second wait. Browser downloads and actual full paths are recorded independently. Mismatches never stop the queue."
     };
     const uri=URL.createObjectURL(new Blob([JSON.stringify(merged,null,2)],
       {type:"application/json;charset=utf-8"}));
