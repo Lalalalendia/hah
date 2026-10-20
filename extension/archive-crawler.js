@@ -202,16 +202,50 @@
       return null;
     }
 
-    async waitForChange(previous,timeout=8500) {
+    navigationHint(){
+      const header=this.doc.querySelector('[class*="archiveHeader_"]');
+      const path=header?.getAttribute("data-archive-path");
+      return path==null?null:path;
+    }
+
+    async waitForChange(previous,timeout=8500,previousHint=null) {
       const start=Date.now();
       while(Date.now()-start<timeout){
         await this.delay(170);
-        if(this.snapshot()!==previous) {
+        // Listing contents alone are insufficient: parent and child folders
+        // may contain exactly the same member names. A viewer-provided path
+        // transition is also acceptable navigation evidence.
+        const changed=this.snapshot()!==previous||
+          (previousHint!==null&&this.navigationHint()!==previousHint);
+        if(changed) {
           await this.delay(240);
           return true;
         }
       }
       return false;
+    }
+
+    async rewindToRoot(expectedArchiveName=null){
+      const header=this.doc.querySelector('[class*="archiveHeader_"]');
+      const title=header?.querySelector("strong")?.textContent?.trim();
+      if(expectedArchiveName && title!==expectedArchiveName)
+        return {ok:false,error:"archive-viewer-identity-not-confirmed"};
+      while(this.frames.length>1){
+        const child=this.frames[this.frames.length-1];
+        const parent=this.frames[this.frames.length-2];
+        const back=this.backButton();
+        if(!back)return {ok:false,error:"cannot-rewind-crawler-no-back-control",path:child.path};
+        const before=this.snapshot(),hint=this.navigationHint();
+        back.click();
+        if(!await this.waitForChange(before,8500,hint))
+          return {ok:false,error:"cannot-rewind-crawler-navigation-unconfirmed",path:child.path};
+        const listing=await this.enumerate();
+        if(!listing.ok||!listing.complete||
+           listing.items.map(x=>x.name).sort().join("\n")!==parent.signature)
+          return {ok:false,error:"cannot-rewind-crawler-parent-mismatch",path:parent.path};
+        this.frames.pop();
+      }
+      return {ok:true,rootReached:this.frames.length===1};
     }
 
     backButton() {
@@ -251,10 +285,10 @@
         if(!row){
           this.halted=true;return {ok:false,error:"folder-row-not-visible",path};
         }
-        const old=this.snapshot();
+        const old=this.snapshot(),oldHint=this.navigationHint();
         const target=row.querySelector('[class*="resourceItemName_"]') || row;
         target.click();
-        const changed=await this.waitForChange(old);
+        const changed=await this.waitForChange(old,8500,oldHint);
         if(!changed){
           this.halted=true;return {ok:false,error:"folder-navigation-not-confirmed",path};
         }
@@ -274,9 +308,9 @@
       if(!back){
         this.halted=true;return {ok:false,error:"back-control-not-found",path:child.path};
       }
-      const old=this.snapshot();
+      const old=this.snapshot(),oldHint=this.navigationHint();
       back.click();
-      const changed=await this.waitForChange(old);
+      const changed=await this.waitForChange(old,8500,oldHint);
       if(!changed){
         this.halted=true;return {ok:false,error:"back-navigation-not-confirmed",path:child.path};
       }
