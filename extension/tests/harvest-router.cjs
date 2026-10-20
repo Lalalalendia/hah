@@ -57,11 +57,17 @@ async function claim(r,s,scope,id,name,folder){
   const pendingB=make(202,22,"unrelated.bin");
   assert(await r.created(pendingB));
   assert.equal((await r.determine(pendingB)).filename,"Второй.rar/EXTRA/unrelated.bin");
+  // Even a Yandex download from the correct tab is unrelated if the extension
+  // has no outstanding click for that capture.
+  const manual=make(203,22,"manual-download.exe");
+  assert.equal(await r.created(manual),false);
+  assert.equal((await r.determine(manual)).handled,false);
+  assert(!br.worker.state.downloads["203"]);
   // A detached Yandex response has no unique owner while two scopes are live.
   const detached=make(250,-1,"same.txt");
   assert.equal(await r.created(detached),false);
   assert.equal((await r.determine(detached)).handled,false);
-  assert.equal(local.rr_ambiguous_downloads_v16.length,1,"Quarantine by download ID");
+  assert.equal(local.rr_ambiguous_downloads_v16.length,2,"Quarantine by download ID");
   assert(!JSON.stringify(local).includes("DO_NOT_LOG"),"Signed URLs never enter storage");
   assert.equal(ar.worker.state.downloads["250"],undefined);
   assert.equal(br.worker.state.downloads["250"],undefined);
