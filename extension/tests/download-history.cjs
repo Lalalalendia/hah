@@ -154,5 +154,100 @@ async function rename(item){
   assert.equal(local.rr_ledger[unsafeKey].state,"needs-review");
   assert(!(await dispatch({kind:"RR_ARM",token:"retry-block",key:unsafeKey,
     folder:"HELP",filename:"FAIL.TXT"})).ok);
+
+  // A wrong-path completed transfer is explicitly reviewed but no longer
+  // owns a live watcher. Another unrelated file can safely proceed.
+  const reviewed=await dispatch({kind:"RR_PREPARE_RESUME"});
+  assert(reviewed.ok && reviewed.active===null,JSON.stringify(reviewed));
+  assert(reviewed.unresolved.some(x=>x.path==="HELP/FAIL.TXT"));
+  const risky=await dispatch({kind:"RR_ARM",token:"collision",key:"Disk-2.rar/REPORT/FAIL.TXT",
+    folder:"REPORT",filename:"FAIL.TXT"});
+  assert(!risky.ok && /matching filename/.test(risky.error),risky);
+  // Browser history may prove an unknown download arrived exactly in the
+  // assigned destination. Reconcile it without clicking anything again.
+  const reconciledKey="Disk-2.rar/REPORT/LATE.TXT";
+  local.rr_ledger[reconciledKey]={
+    state:"needs-review",filename:"LATE.TXT",
+    target:"YandexRARRecovery/Disk-2.rar/REPORT/LATE.TXT",
+    started:Date.now()-9*60*1000,reason:"Server delay"
+  };
+  const already=downloadedItem(200,"LATE.TXT",
+    "C:\\Downloads\\YandexRARRecovery\\Disk-2.rar\\REPORT\\LATE.TXT");
+  already.state="complete";already.bytesReceived=2229;
+  downloads.push(already);
+  const check=await dispatch({kind:"RR_PREPARE_RESUME"});
+  assert(check.ok && check.reconciled>=1,JSON.stringify(check));
+  assert.equal(local.rr_ledger[reconciledKey].state,"downloaded");
+  assert.equal(local.rr_ledger[reconciledKey].bytes,2229);
+  // Uncertain watcher younger than 8 minutes cannot be deferred.
+  const oldKey="Disk-2.rar/HELP/UNCONFIRMED.XML";
+  assert((await dispatch({kind:"RR_ARM",token:"old-click",key:oldKey,
+    folder:"HELP",filename:"UNCONFIRMED.XML"})).ok);
+  await dispatch({kind:"RR_CLICK_SENT",token:"old-click"});
+  await dispatch({kind:"RR_MARK_UNKNOWN",token:"old-click"});
+  const tooEarly=await dispatch({kind:"RR_PREPARE_RESUME"});
+  assert(tooEarly.ok && tooEarly.active?.state==="waiting",JSON.stringify(tooEarly));
+  assert.equal(tooEarly.deferred,0);
+  assert(session.rr_pending["10"]);
+  // After 9 minutes and no browser in-progress download, explicit Resume
+  // review may safely defer this record, but not re-request it.
+  vm.runInContext('watchers["10"].started=Date.now()-540000',scope);
+  const parked=await dispatch({kind:"RR_PREPARE_RESUME"});
+  assert(parked.ok && parked.active===null && parked.deferred===1,JSON.stringify(parked));
+  assert(!session.rr_pending["10"]);
+  assert.equal(local.rr_ledger[oldKey].state,"needs-review");
+  assert(!(await dispatch({kind:"RR_ARM",token:"try-again",key:oldKey,
+    folder:"HELP",filename:"UNCONFIRMED.XML"})).ok);
+  assert(!(await dispatch({kind:"RR_ARM",token:"colliding-name",
+    key:"Disk-2.rar/REPORT/UNCONFIRMED.XML",folder:"REPORT",
+    filename:"UNCONFIRMED.XML"})).ok);
+  // An unrelated file can be requested. If the old uncertain transfer
+  // appears late, its different basename cannot attach to the new watcher.
+  const freshKey="Disk-2.rar/HELP/NEW-UNIQUE.XML";
+  assert((await dispatch({kind:"RR_ARM",token:"fresh",key:freshKey,
+    folder:"HELP",filename:"NEW-UNIQUE.XML"})).ok);
+  await dispatch({kind:"RR_CLICK_SENT",token:"fresh"});
+  const oldLate=downloadedItem(201,"UNCONFIRMED.XML","UNCONFIRMED.XML",71);
+  downloads.push(oldLate);
+  createdHandler(oldLate);await tick();
+  assert.equal(session.rr_pending["10"].downloadId,null);
+  const unlabelled=downloadedItem(202,"","",10);
+  downloads.push(unlabelled);
+  createdHandler(unlabelled);await tick();
+  assert.equal(session.rr_pending["10"].downloadId,null);
+  const newItem=downloadedItem(203,"NEW-UNIQUE.XML","NEW-UNIQUE.XML",89);
+  downloads.push(newItem);
+  createdHandler(newItem);await tick();
+  assert.equal(session.rr_pending["10"].downloadId,203);
+  const renamed=await rename(newItem);
+  assert.equal(renamed.filename,
+    "YandexRARRecovery/Disk-2.rar/HELP/NEW-UNIQUE.XML");
+  newItem.filename="C:\\Downloads\\YandexRARRecovery\\Disk-2.rar\\HELP\\NEW-UNIQUE.XML";
+  newItem.state="complete";newItem.bytesReceived=20;newItem.totalBytes=20;
+  changedHandler({id:203,state:{current:"complete"}});
+  await tick();
+  assert.equal(local.rr_ledger[freshKey].state,"downloaded");
+  assert.equal(local.rr_ledger[oldKey].state,"needs-review");
+  // A truly in-progress transfer is NOT deferred even after nine minutes.
+  const activeKey="Disk-2.rar/HELP/ACTIVE.XML";
+  assert((await dispatch({kind:"RR_ARM",token:"active",key:activeKey,
+    folder:"HELP",filename:"ACTIVE.XML"})).ok);
+  await dispatch({kind:"RR_CLICK_SENT",token:"active"});
+  vm.runInContext('watchers["10"].started=Date.now()-540000',scope);
+  const progress=downloadedItem(204,"ACTIVE.XML","ACTIVE.XML");
+  downloads.push(progress);
+  createdHandler(progress);await tick();
+  const activeCheck=await dispatch({kind:"RR_PREPARE_RESUME"});
+  assert(activeCheck.ok && activeCheck.active?.state==="in_progress",
+    JSON.stringify(activeCheck));
+  assert.equal(activeCheck.deferred,0);
+  assert(session.rr_pending["10"]);
+  progress.state="interrupted";progress.error="NETWORK_FAILED";
+  changedHandler({id:204,state:{current:"interrupted"}});
+  await tick();
+  assert.equal(local.rr_ledger[activeKey].state,"needs-review");
+  assert(!session.rr_pending["10"]);
+  console.log("PASS: resume reconciles completed files, defers stale unknowns only after 8 min, blocks same-name retries, never captures old late downloads");
+
   console.log("PASS: 2/9-minute delayed events, single click, persisted uncertainty, nested paths, path mismatch and no leaked signed URLs");
 })().catch(error=>{console.error(error);process.exitCode=1;});
