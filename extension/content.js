@@ -144,13 +144,13 @@
     panel=document.createElement("section");
     panel.id="rr-recovery-panel";
     panel.innerHTML=[
-      '<header><strong>RAR Rescue v0.11</strong><button id="rr-close" title="Закрыть">×</button></header>',
+      '<header><strong>RAR Rescue v0.12</strong><button id="rr-close" title="Закрыть">×</button></header>',
       '<p>Диск 2.rar · автоматическая выгрузка всех доступных файлов.</p>',
       '<div class="rr-actions"><button id="rr-harvest">Скачать всё</button></div>',
       '<p id="rr-harvest-count"></p>',
       '<p id="rr-progress" role="status"></p>',
       '<pre id="rr-log"></pre>',
-      '<small>Все файлы в обычной папке «Загрузки», без дополнительных папок. Имена — ровно те, что вернул Яндекс, с автоматическими суффиксами браузера при совпадениях. Полный журнал сохраняется автоматически.</small>'
+      '<small>Сохраняется исходная структура в «Загрузки/Disk-2.rar», без дополнительных служебных папок. Имена — ровно те, что вернул Яндекс, с автоматическими суффиксами браузера при совпадениях. Полный журнал сохраняется автоматически.</small>'
     ].join("");
     document.body.append(panel);
     el("rr-close").addEventListener("click",()=>{panel.remove();panel=null;});
@@ -778,7 +778,7 @@
         directories:Object.keys(tree?.directories||{}).length,
         sourcePaths:Object.keys(tree?.files||{})},
       legacyRequests:legacy,
-      note:"Files saved using Yandex/browser-returned basenames directly in the default browser Downloads folder. Attribution to a clicked source is not proof of file identity. Compare downloads later."
+      note:"Files saved using Yandex/browser-returned basenames in original archive folders under Downloads/Disk-2.rar. Attribution to a clicked source is not proof of file identity. Compare downloads later."
     };
     const uri=URL.createObjectURL(new Blob([JSON.stringify(merged,null,2)],
       {type:"application/json;charset=utf-8"}));
@@ -847,14 +847,16 @@
           const arm=await send({kind:"RR_HARVEST_ARM",folder:file.folder,filename:file.name});
           if(arm.skipped){skipped++;continue;}
           try{
+            // Chrome may report the download before the frame call returns.
+            // Associate the archive source path BEFORE invoking the click.
+            await send({kind:"RR_HARVEST_SENT",folder:file.folder,filename:file.name,
+              clicked:true});
             const action=await inFrame(frame.frameId,{
               kind:"RR_SENSOR_TRIGGER",name:file.name,pilot:false,
               allowLocate:true,verifyNavigation:true,expectedFolder:dir,
               approvedMode:"label",approvedSlots:2
             });
             if(!action.clicked)throw new Error(action.error||"Не нажалась кнопка файла");
-            await send({kind:"RR_HARVEST_SENT",folder:file.folder,filename:file.name,
-              clicked:true});
             clicked++;
           }catch(error){
             await send({kind:"RR_HARVEST_SENT",folder:file.folder,filename:file.name,
@@ -1083,7 +1085,7 @@
 
   async function diagnostics() {
     const report={
-      tool:"RAR Rescue v0.11",
+      tool:"RAR Rescue v0.12",
       targetArchive:"Disk 2.rar",
       frames:[...frames.values()].map(x=>({
         id:x.frameId,host:x.host,count:x.count,folders:x.folders,unknown:x.unknown,
