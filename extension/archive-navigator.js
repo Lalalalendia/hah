@@ -44,7 +44,7 @@ class ArchiveNavigator {
     this.verified++;
     return true;
   }
-  async start(directories){
+  async start(directories,expectedArchiveName=null){
     this.manifest=null;
     this.currentPath=null;
     this.halted=false;
@@ -52,13 +52,13 @@ class ArchiveNavigator {
     this.backed=0;
     this.verified=0;
     try{
-      if(!Array.isArray(directories) || directories.length!==88)
-        throw new Error("Expected exactly 88 known directories, including root");
+      if(!Array.isArray(directories) || directories.length<1 || directories.length>100000)
+        throw new Error("Archive directory manifest is empty or too large");
       const registry=new Map();
       for(const directory of directories){
         const path=directory?.path, parts=ArchiveNavigator.parts(path);
         if(!parts || registry.has(path) || !Array.isArray(directory.entries) ||
-           directory.entries.length>3500)throw new Error("Invalid directory manifest");
+           directory.entries.length>100000)throw new Error("Invalid directory manifest");
         const entries=[];
         const names=new Set();
         for(const entry of directory.entries){
@@ -87,9 +87,8 @@ class ArchiveNavigator {
         }
       }
       this.manifest=registry;
-      // This checks *only* the root. Do not call crawler.step(), which
-      // would descend into all 87 directories again.
-      const rootResult=await this.crawler.begin();
+      // Verify only the root; never descend into unrelated directories again.
+      const rootResult=await this.crawler.begin(expectedArchiveName);
       if(!rootResult.ok || rootResult.event!=="directory" || rootResult.path!=="")
         throw new Error(rootResult.error||"Archive root could not be confirmed");
       this.check("",{ok:true,complete:true,items:rootResult.items,
