@@ -76,7 +76,7 @@
         ("Запрошено файлов: "+h.requested+" · завершилось загрузок: "+h.completed+
         " · другое имя: "+h.differentNames+" · не удалось связать: "+h.unattributed+
         " · ожидает: "+h.unresolved) :
-        "Уже загруженное будет пропущено. Файлы сохраняются в одной папке, с именами Яндекса.";
+        "Уже загруженное будет пропущено. Файлы сохраняются в «Загрузки» без подпапок, с именами Яндекса.";
     }
     if (el("rr-status")) el("rr-status").textContent = scanning ?
       "Сканирование кадров браузера..." :
@@ -150,7 +150,7 @@
       '<p id="rr-harvest-count"></p>',
       '<p id="rr-progress" role="status"></p>',
       '<pre id="rr-log"></pre>',
-      '<small>Одна папка для всех полученных файлов. Имена — ровно те, что вернул Яндекс, с автоматическими суффиксами браузера при совпадениях. Полный журнал сохраняется автоматически.</small>'
+      '<small>Все файлы в обычной папке «Загрузки», без дополнительных папок. Имена — ровно те, что вернул Яндекс, с автоматическими суффиксами браузера при совпадениях. Полный журнал сохраняется автоматически.</small>'
     ].join("");
     document.body.append(panel);
     el("rr-close").addEventListener("click",()=>{panel.remove();panel=null;});
@@ -778,7 +778,7 @@
         directories:Object.keys(tree?.directories||{}).length,
         sourcePaths:Object.keys(tree?.files||{})},
       legacyRequests:legacy,
-      note:"Files saved using Yandex/browser-returned basenames in one flat recovery folder. Attribution to a clicked source is not proof of file identity. Compare downloads later."
+      note:"Files saved using Yandex/browser-returned basenames directly in the default browser Downloads folder. Attribution to a clicked source is not proof of file identity. Compare downloads later."
     };
     const uri=URL.createObjectURL(new Blob([JSON.stringify(merged,null,2)],
       {type:"application/json;charset=utf-8"}));
