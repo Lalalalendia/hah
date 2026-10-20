@@ -76,7 +76,7 @@
         ("Запрошено файлов: "+h.requested+" · завершилось загрузок: "+h.completed+
         " · другое имя: "+h.differentNames+" · не удалось связать: "+h.unattributed+
         " · ожидает: "+h.unresolved) :
-        "Уже загруженное будет пропущено. Файлы сохраняются в «Загрузки» без подпапок, с именами Яндекса.";
+        "Проверит все 1199 позиций; при повторном запуске пропустит уже нажатые в этой версии. Файлы сохраняются в «Загрузки» без подпапок, с именами Яндекса.";
     }
     if (el("rr-status")) el("rr-status").textContent = scanning ?
       "Сканирование кадров браузера..." :
@@ -809,14 +809,15 @@
       const frame=bestFrame();
       if(!frame)throw new Error("Просмотрщик Яндекса не найден");
       running=true;treePhase="raw-harvest";treeFrame=frame.frameId;
-      const legacy=await countDownloads();
       const previous=await send({kind:"RR_HARVEST_REPORT"});
       const already=previous.requests||{};
       const groups=new Map();
       for(const file of Object.values(tree.files)){
-        const old=legacy["Disk-2.rar/"+file.sourcePath];
-        if(old || already[file.sourcePath] ||
-           file.status==="downloaded" || file.status==="needs-review"){
+        // Old strict-ledger "downloaded" states cannot prove the server
+        // actually returned the requested file. In raw capture mode visit
+        // all 1199 original rows once, including those from earlier versions.
+        // Resume by ONLY skipping requests already recorded in this mode.
+        if(already[file.sourcePath]){
           skipped++;
           continue;
         }
@@ -861,7 +862,7 @@
             failedActions++;
           }
           progress="Обработано запросов: "+(clicked+failedActions)+
-            "; пропущено ранее: "+skipped+"; текущий исходный путь: "+file.sourcePath;
+            "; пропущено в текущем сборе: "+skipped+"; текущий исходный путь: "+file.sourcePath;
           render();
           if((clicked+failedActions)%10===0){
             harvestSummary=await send({kind:"RR_HARVEST_STATUS"});
