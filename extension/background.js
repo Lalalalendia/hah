@@ -1,9 +1,10 @@
 /* Manifest V3 service worker. All state stays on the user's machine. */
-importScripts("common.js");
+importScripts("common.js","harvest-worker.js");
 "use strict";
 
 const STATE_KEY = "rr_pending";
 const LEDGER_KEY = "rr_ledger";
+const rawHarvest = new globalThis.RarRescueHarvestWorker(chrome,RarRescueUtils);
 const watchers = {};
 const ready = chrome.storage.session.get(STATE_KEY).then(data => {
   Object.assign(watchers, data[STATE_KEY] || {});
@@ -214,6 +215,41 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       respond(result && typeof result === "object" ? result : {ok:false,error:"Viewer did not respond"});
       return;
     }
+    if(message.kind==="RR_HARVEST_BEGIN") {
+      if(sender.frameId!==0)throw new Error("Only parent frame can start raw capture");
+      // The previous strict attempt may still respond much later. Preserve
+      // the old ledger status, but do not let that watcher force another
+      // filename on a new raw file. The raw inbox will log late transfers.
+      for(const record of Object.values(watchers))
+        await markReview(record,"Superseded by raw as-returned archive collection");
+      for(const id of Object.keys(watchers))delete watchers[id];
+      await saveWatchers();
+      const result=await rawHarvest.begin(tabId,1199);
+      respond(result);return;
+    }
+    if(message.kind==="RR_HARVEST_STOP") {
+      if(sender.frameId!==0)throw new Error("Only parent frame can stop raw capture");
+      respond(await rawHarvest.stop());return;
+    }
+    if(message.kind==="RR_HARVEST_ARM") {
+      if(sender.frameId!==0)throw new Error("Only parent frame can reserve raw source");
+      respond(await rawHarvest.arm(String(message.folder||""),String(message.filename||"")));
+      return;
+    }
+    if(message.kind==="RR_HARVEST_SENT") {
+      if(sender.frameId!==0)throw new Error("Only parent frame can confirm archive-row action");
+      respond(await rawHarvest.sent(String(message.folder||""),
+        String(message.filename||""),message.clicked===true,String(message.reason||"")));
+      return;
+    }
+    if(message.kind==="RR_HARVEST_STATUS") {
+      if(sender.frameId!==0)throw new Error("Only parent frame can inspect raw capture");
+      respond(await rawHarvest.status());return;
+    }
+    if(message.kind==="RR_HARVEST_REPORT") {
+      if(sender.frameId!==0)throw new Error("Only parent frame can export raw capture");
+      respond(await rawHarvest.report());return;
+    }
     if(message.kind==="RR_PREPARE_RESUME") {
       if(sender.frameId!==0)throw new Error("Only main recovery panel can inspect or defer transfers");
       const ledger=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY]||{};
@@ -314,6 +350,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       return;
     }
     if (message.kind === "RR_ARM") {
+      if(rawHarvest.recording())throw new Error("Raw archive capture is active; strict download is disabled");
       if (sender.frameId !== 0) throw new Error("Only the top-level panel can arm a download");
       const token=String(message.token||"").slice(0,80);
       const key=String(message.key||"").slice(0,500);
@@ -439,6 +476,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 chrome.downloads.onCreated.addListener(item => {
   void (async () => {
     await ready;
+    if(await rawHarvest.created(item))return;
     if (!RarRescueUtils.isDownloadHost(item.url)) return;
     const record = findActiveWatcher(item);
     if (!record || record.downloadId != null) return;
@@ -452,6 +490,11 @@ chrome.downloads.onCreated.addListener(item => {
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
   void (async () => {
     await ready;
+    const raw=await rawHarvest.determine(item);
+    if(raw.handled){
+      suggest({filename:raw.filename,conflictAction:raw.conflictAction});
+      return;
+    }
     const record = findByDownloadId(item.id) || findActiveWatcher(item);
     if (!record || !RarRescueUtils.isDownloadHost(item.url) ||
         (record.downloadId != null && record.downloadId !== item.id)) return suggest();
@@ -469,9 +512,10 @@ chrome.downloads.onChanged.addListener(delta => {
   if (!delta.state || !["complete", "interrupted"].includes(delta.state.current)) return;
   void (async () => {
     await ready;
+    const item=(await chrome.downloads.search({id:delta.id}))[0] || {};
+    if(await rawHarvest.changed(delta.id,item))return;
     const record=findByDownloadId(delta.id);
     if(!record)return;
-    const item=(await chrome.downloads.search({id:delta.id}))[0] || {};
     await completeFromChrome(record,item);
   })();
 });
