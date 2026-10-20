@@ -29,8 +29,9 @@ const scope={chrome:hooks,URL,Date,setTimeout,clearTimeout};
 scope.globalThis=scope;
 vm.createContext(scope);
 vm.runInContext(fs.readFileSync(path.join(root,"common.js"),"utf8"),scope);
+vm.runInContext(fs.readFileSync(path.join(root,"harvest-worker.js"),"utf8"),scope);
 vm.runInContext(fs.readFileSync(path.join(root,"background.js"),"utf8")
-  .replace('importScripts("common.js");',''),scope);
+  .replace('importScripts("common.js","harvest-worker.js");',''),scope);
 assert(messageHandler && createdHandler && changedHandler && filenameHandler);
 const sender={tab:{id:10,url:"https://disk.yandex.ru/d/_RSlWomRWmty1w"},
   url:"https://disk.yandex.ru/d/_RSlWomRWmty1w",frameId:0};
