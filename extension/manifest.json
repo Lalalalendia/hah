@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Yandex RAR Rescue",
-  "version": "0.10.0",
-  "description": "Safe resumable recovery: reconcile delayed downloads and skip unresolved file identities without repeating them.",
+  "version": "0.11.0",
+  "description": "One-button archive collection: download every available member as returned by Yandex, preserve names, log source mismatches.",
   "permissions": [
     "downloads",
     "storage"
@@ -16,7 +16,7 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "RAR Rescue - open recovery panel"
+    "default_title": "RAR Rescue - Скачать всё"
   },
   "content_scripts": [
     {
