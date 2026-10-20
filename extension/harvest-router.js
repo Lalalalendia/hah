@@ -154,10 +154,15 @@ class HarvestRouter {
     if(rows.length>300)rows.splice(0,rows.length-300);
     await this.api.storage.local.set({[QUARANTINE_KEY]:rows});
   }
+  hasLiveScopes(){
+    return [...this.workers.values()].some(worker=>worker.recording());
+  }
   async created(item){
     const worker=await this.forEvent(item);
     if(!worker){
-      if(this.workers.size)await this.quarantine(item,"no-unambiguous-archive-owner");
+      // Do not log unrelated Yandex downloads when every archive session
+      // has finished its capture and late-event tail.
+      if(this.hasLiveScopes())await this.quarantine(item,"no-unambiguous-archive-owner");
       return false;
     }
     return worker.created(item);
@@ -165,7 +170,7 @@ class HarvestRouter {
   async determine(item){
     const worker=await this.forEvent(item);
     if(!worker){
-      if(this.workers.size)await this.quarantine(item,"filename-not-owned");
+      if(this.hasLiveScopes())await this.quarantine(item,"filename-not-owned");
       return {handled:false};
     }
     return worker.determine(item);
