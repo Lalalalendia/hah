@@ -203,7 +203,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       if (!Number.isInteger(frameId) || frameId < 0) throw new Error("Invalid viewer frame");
       const payload = message.payload || {};
       if (!["RR_SENSOR_LIST", "RR_SENSOR_TRIGGER", "RR_SENSOR_SCROLL",
-        "RR_SENSOR_CRAWL_BEGIN", "RR_SENSOR_CRAWL_STEP", "RR_SENSOR_CRAWL_STATUS"].includes(payload.kind)) {
+        "RR_SENSOR_CRAWL_BEGIN", "RR_SENSOR_CRAWL_STEP", "RR_SENSOR_CRAWL_STATUS", "RR_SENSOR_NAV_START", "RR_SENSOR_NAV_GOTO", "RR_SENSOR_NAV_STATUS"].includes(payload.kind)) {
         throw new Error("Unsupported viewer command");
       }
       const result = await chrome.tabs.sendMessage(tabId, payload, { frameId });
