@@ -106,6 +106,58 @@ try:
     assert any(e["path"]=="JRE" and not e["items"] for e in directory_events)
     print("PASS: recursive navigation, empty directories, same-name nested file buttons, and return to root")
     print(json.dumps({"paths":visited,"objects":events[-1]["objects"]}))
+    # Test durable per-subtree inventory checkpoints. The restart begins at
+    # viewer root and checks cached parent signatures; a fully scanned HELP
+    # subtree must never be re-entered or counted twice.
+    drv.execute_script("window.currentPath='';draw()")
+    drv.execute_script("window.__crawler=new window.RarRescueCrawler(document,window.RarRescueDOM,{delay:()=>Promise.resolve()})")
+    root=call("begin")
+    cache={"": {"path":"","entries":root["items"]}}
+    closed=[]
+    for i in range(12):
+        step=call("step")
+        assert step["ok"],step
+        if step["event"]=="directory":
+            cache[step["path"]]={"path":step["path"],"entries":step["items"]}
+        elif step["event"]=="returned":
+            closed.append(step["completedPath"])
+            if step["completedPath"]=="HELP":break
+    else:raise AssertionError("Crawler did not close first subtree")
+    assert set(closed)=={"HELP","HELP/SUB"},closed
+    assert drv.execute_script("return window.currentPath")==""
+    checkpoint={"directories":cache,"completedSubtrees":closed}
+    drv.execute_script("window.navEvents=[];window.currentPath='';draw()")
+    drv.execute_script("""
+      window.__crawler=new window.RarRescueCrawler(document,window.RarRescueDOM,
+        {delay:()=>Promise.resolve()});
+    """)
+    resumed=drv.execute_async_script("""
+      const done=arguments[arguments.length-1];
+      window.__crawler.begin('Диск 2.rar',arguments[0]).then(done);
+    """,checkpoint)
+    assert resumed["ok"],resumed
+    skipped=[]
+    for _ in range(20):
+        item=call("step")
+        assert item["ok"],item
+        if item["event"]=="skipped":skipped.append(item["path"])
+        if item["event"]=="complete":break
+    else:raise AssertionError("Checkpointed crawler did not complete")
+    assert skipped==["HELP"],skipped
+    assert item["objects"]==12 and item["paths"]==6,item
+    visited=drv.execute_script("return window.navEvents")
+    assert not any(x=="enter:HELP" or x=="enter:HELP/SUB" for x in visited),visited
+    print("PASS: restart skips previously completed subtree, preserves 12 objects, and reaches root")
+    # If the root contents changed, the checkpoint must be rejected.
+    drv.execute_script("window.currentPath='';trees[''][0][0]='CHANGED';draw()")
+    drv.execute_script("window.__crawler=new window.RarRescueCrawler(document,window.RarRescueDOM,{delay:()=>Promise.resolve()})")
+    mismatched=drv.execute_async_script("""
+      const done=arguments[arguments.length-1];
+      window.__crawler.begin('Диск 2.rar',arguments[0]).then(done);
+    """,checkpoint)
+    assert not mismatched["ok"] and "checkpoint-directory-changed" in mismatched["error"],mismatched
+    print("PASS: changed source root invalidates stored inventory")
+    drv.execute_script("trees[''][0][0]='HELP';draw()")
     # An absent back control must STOP rather than silently treating a
     # nested folder as if it were the root.
     drv.execute_script("window.currentPath='HELP/SUB';draw()")
