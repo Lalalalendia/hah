@@ -853,6 +853,7 @@
       running=true;treePhase="raw-harvest";treeFrame=frame.frameId;
       const previous=await send({kind:"RR_HARVEST_REPORT",scope});
       const already=previous.requests||{};
+      const safeRetryPaths=new Set(previous.retryableSourcePaths||[]);
       const groups=new Map();
       for(const file of Object.values(tree.files)){
         // Old strict-ledger "downloaded" states cannot prove the server
@@ -865,7 +866,7 @@
           !Number(previousAttempt.clickConfirmedAt||0) &&
           !Number(previousAttempt.clickedAt||0) &&
           !previousAttempt.downloadIds?.length;
-        if(previousAttempt && !lookupOnlyFailure){
+        if(previousAttempt && !safeRetryPaths.has(file.sourcePath)){
           skipped++;
           continue;
         }
@@ -883,14 +884,30 @@
       await send({kind:"RR_HARVEST_BEGIN",scope,total:Object.keys(tree.files).length});
       captureBegun=true;
       await beginKnownPathNavigation(frame.frameId);
-      const folders=[...groups.keys()].sort((a,b)=>a.localeCompare(b));
-      notice="Запускаю "+folders.length+" каталогов, "+[...groups.values()].reduce((n,a)=>n+a.length,0)+
-        " новых запросов. Запись без переименования полученных файлов.";
+      notice="Карта: "+Object.keys(tree.files).length+" файлов. Последовательная выгрузка, затем безопасные повторы ошибок.";
       show(notice);
-      for(const dir of folders){
-        if(stopRequested)break;
-        await goToKnownDirectory(frame.frameId,dir);
-        for(const file of groups.get(dir)){
+      for(let pass=0;pass<3&&!stopRequested;pass++){
+        let passGroups=groups;
+        if(pass>0){
+          await sleep(3000*pass);
+          const current=await send({kind:"RR_HARVEST_REPORT",scope});
+          const remaining=new Set(current.retryableSourcePaths||[]);
+          passGroups=new Map();
+          for(const file of Object.values(tree.files)){
+            if(!remaining.has(file.sourcePath))continue;
+            const list=passGroups.get(file.folder)||[];
+            list.push(file);
+            passGroups.set(file.folder,list);
+          }
+        }
+        if(!passGroups.size)break;
+        const folders=[...passGroups.keys()].sort((a,b)=>a.localeCompare(b));
+        if(pass>0)show("Повторный проход "+pass+": "+[...passGroups.values()].reduce((n,a)=>n+a.length,0)+
+          " доказанно неудачных позиций");
+        for(const dir of folders){
+          if(stopRequested)break;
+          await goToKnownDirectory(frame.frameId,dir);
+          for(const file of passGroups.get(dir)){
           if(stopRequested)break;
           // Preflight may scroll a virtualized directory, without clicking.
           // Do this before the 120-second click deadline starts.
@@ -916,10 +933,17 @@
               });
             }catch(error){preflight={ok:false,error:String(error.message||error)};}
           }
-          if(!preflight?.ok||!preflight.inspected)
-            throw new Error("Viewer cannot locate "+file.sourcePath+
-              " ("+String(preflight?.error||"row missing")+
-              "). No click was sent. Reload Yandex viewer, then resume.");
+          if(!preflight?.ok||!preflight.inspected){
+            const arm=await send({kind:"RR_HARVEST_ARM",folder:file.folder,filename:file.name});
+            if(!arm.skipped){
+              await send({kind:"RR_HARVEST_LOOKUP_FAILED",folder:file.folder,filename:file.name,
+                reason:String(preflight?.error||"file-row-not-visible").slice(0,160)});
+              failedActions++;
+            }
+            show("Не удалось обнаружить строку "+file.sourcePath+
+              " — факт отсутствия клика записан, продолжаю остальные файлы.");
+            continue;
+          }
           const arm=await send({kind:"RR_HARVEST_ARM",folder:file.folder,filename:file.name});
           if(arm.skipped){skipped++;continue;}
           const dispatched=await send({kind:"RR_HARVEST_DISPATCH",folder:file.folder,filename:file.name});
@@ -969,6 +993,7 @@
             ". Причину сохраняю в журнал; очередь продолжается.");
           else if(result.state==="not-clicked")show("Кнопка не нажалась: "+file.sourcePath+
             ". Пропускаю, журнал сохраняется.");
+          }
         }
       }
       notice=stopRequested ?
