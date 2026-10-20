@@ -5,6 +5,7 @@ on:
       - "extension/**"
       - "tools/test_archive_fixture.py"
       - "tools/test_recursive_fixture.py"
+      - "tools/test_direct_navigation_fixture.py"
       - ".github/workflows/extension-check.yml"
   pull_request:
     paths:
@@ -31,6 +32,7 @@ jobs:
           node --check extension/recovery-plan.js
           node --check extension/tests/recovery-plan.cjs
           node --check extension/archive-crawler.js
+          node --check extension/archive-navigator.js
           node --check extension/frame-sensor.js
           node --check extension/tests/dom-smoke.cjs
           node --check extension/tests/download-history.cjs
@@ -49,9 +51,10 @@ jobs:
           python -m pip install -q selenium
           python tools/test_archive_fixture.py
           python tools/test_recursive_fixture.py
+          python tools/test_direct_navigation_fixture.py
       - name: Upload ready-to-install extension directory
         uses: actions/upload-artifact@v4
         with:
-          name: rar-rescue-v08
+          name: rar-rescue-v09
           path: extension/
           retention-days: 7
