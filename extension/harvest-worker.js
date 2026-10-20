@@ -23,11 +23,23 @@ const iso=()=>new Date().toISOString();
 const empty=(total=1199,scopeId=null)=>({schema:SCHEMA,phase:"idle",
   scopeId,batchId:null,tabId:null,createdAt:null,startedAt:0,tailDeadline:0,
   requests:{},downloads:{},audit:[],sourcePathsCount:total,migratedFrom:null});
+const SAFE_RETRY_CODES=/^(NETWORK_(FAILED|TIMEOUT|DISCONNECTED|SERVER_DOWN)|SERVER_(FAILED|UNREACHABLE|BAD_CONTENT)|FILE_TRANSIENT_ERROR)$/;
+const MAX_TRANSFER_RETRIES=2,MAX_LOOKUP_ATTEMPTS=3;
 function isSafeToRetryLookup(record){
   return record?.state==="not-clicked" &&
     !Number(record.clickConfirmedAt||0) &&
     !Number(record.clickedAt||0) &&
-    !record.downloadIds?.length;
+    !record.downloadIds?.length &&
+    Number(record.lookupAttempts||0)<MAX_LOOKUP_ATTEMPTS;
+}
+function isSafeToRetryInterrupted(record,downloads){
+  if(record?.state!=="interrupted"||
+     Number(record.retryCount||0)>=MAX_TRANSFER_RETRIES||
+     !record.downloadIds?.length)return false;
+  return record.downloadIds.every(id=>{
+    const row=downloads[String(id)];
+    return row?.state==="interrupted"&&SAFE_RETRY_CODES.test(String(row.error||""));
+  });
 }
 function safeSource(value){
   if(typeof value!=="string"||!value||value.length>2500||value.startsWith("/")||
@@ -136,24 +148,61 @@ class HarvestWorker {
       return this.summary();
     });
   }
+  async lookupFailed(folder,name,reason){
+    const path=safeSource(sourcePath(folder,name));
+    return this.atomic(s=>{
+      const r=s.requests[path];
+      if(!r||r.dispatchAt)throw Error("A row lookup cannot fail after click dispatch");
+      r.lookupAttempts=Number(r.lookupAttempts||0)+1;
+      r.state="not-clicked";
+      r.lastError=String(reason||"File row absent in viewer").slice(0,180);
+      this.log("file-not-clicked",path,r.lastError);
+      return {ok:true,state:r.state,lookupAttempts:r.lookupAttempts};
+    });
+  }
   async arm(folder,name){
     const path=safeSource(sourcePath(folder,name));
     if(!name||name.includes("/")||name.includes("\\"))throw Error("Bad basename");
     // Normalize Windows directory names through existing safe common helper.
     const checked=this.utils.relative(folder,name,this.scope?.outputRoot||null);
     if(!checked.endsWith("/"+this.utils.component(name)))throw Error("Unsafe filename");
+    await this.ready;
+    const previous=this.state.requests[path];
+    if(previous?.state==="interrupted"){
+      for(const id of [...(previous.downloadIds||[])]){
+        const rows=await this.api.downloads.search({id});
+        if(!rows?.[0]){
+          await this.atomic(s=>{
+            s.requests[path].state="needs-review";
+            this.log("retry-history-missing",path,"Cannot prove terminal interruption");
+          });
+          return {ok:true,skipped:true,state:"needs-review",sourcePath:path};
+        }
+        await this.changed(id,rows[0]);
+      }
+    }
     return this.atomic(s=>{
       if(s.phase!=="collecting")throw Error("Capture not active");
       if(s.requests[path]){
         const previous=s.requests[path];
-        if(!isSafeToRetryLookup(previous))
+        const retryLookup=isSafeToRetryLookup(previous);
+        const retryInterrupted=isSafeToRetryInterrupted(previous,s.downloads);
+        if(!retryLookup&&!retryInterrupted)
           return {ok:true,skipped:true,sourcePath:path,state:previous.state};
-        // Only a row lookup failed; there was no viewer click/download.
-        previous.noClickHistory=[...(previous.noClickHistory||[]),{
-          clickId:previous.clickId,dispatchAt:previous.dispatchAt,
-          failedAt:previous.armedAt,reason:previous.lastError||"not visible",
-          state:"not-clicked"
-        }].slice(-30);
+        if(retryLookup){
+          previous.noClickHistory=[...(previous.noClickHistory||[]),{
+            clickId:previous.clickId,dispatchAt:previous.dispatchAt,
+            failedAt:previous.armedAt,reason:previous.lastError||"not visible",
+            state:"not-clicked"
+          }].slice(-30);
+        }else{
+          previous.retryCount=Number(previous.retryCount||0)+1;
+          previous.retryHistory=[...(previous.retryHistory||[]),{
+            clickId:previous.clickId,dispatchAt:previous.dispatchAt,
+            terminalDownloadIds:[...previous.downloadIds],
+            state:"interrupted"
+          }].slice(-MAX_TRANSFER_RETRIES);
+        }
         s.lookupRetrySeq=(Number(s.lookupRetrySeq)||0)+1;
         previous.clickId=s.batchId+":lookup-retry-"+s.lookupRetrySeq;
         previous.armedAt=Date.now();previous.dispatchAt=0;
@@ -161,9 +210,10 @@ class HarvestWorker {
         previous.deadlineAt=0;previous.timedOutAt=0;
         previous.state="armed";previous.lastError=null;
         previous.downloadIds=[];previous.observedNames=[];
-        this.log("lookup-rearmed",path,"No previous row click; safe to retry lookup");
-        return {ok:true,skipped:false,retryOfNoClick:true,
-          sourcePath:path,clickId:previous.clickId};
+        this.log(retryLookup?"lookup-rearmed":"transfer-retried",path,
+          retryLookup?"Previous click never happened":"Confirmed terminal interruption");
+        return {ok:true,skipped:false,retryOfNoClick:retryLookup,
+          retryOfInterrupted:retryInterrupted,sourcePath:path,clickId:previous.clickId};
       }
       const id=s.batchId+":"+(Object.keys(s.requests).length+1);
       s.requests[path]={sourcePath:path,expectedFullPath:this.safeRoot+"/"+path,
@@ -356,6 +406,9 @@ class HarvestWorker {
         (Number(r.dispatchAt)>0?1:0)+(r.noClickHistory?.length||0),0),
       notClickedCount:requests.filter(r=>r.state==="not-clicked").length,
       safeToRetryLookupCount:requests.filter(isSafeToRetryLookup).length,
+      retryableCount:requests.filter(r=>isSafeToRetryLookup(r)||
+        isSafeToRetryInterrupted(r,this.state.downloads)).length,
+      retryClickCount:requests.reduce((n,r)=>n+Number(r.retryCount||0),0),
       clickCount:requests.filter(r=>Number(r.clickConfirmedAt)>0).length,
       downloadStartedCount:rows.length,
       downloadCompletedCount:rows.filter(r=>r.state==="complete").length,
@@ -370,6 +423,10 @@ class HarvestWorker {
   }
   async report(){await this.ready;await this.serial;
     return {ok:true,...JSON.parse(JSON.stringify(this.state)),
+      retryableSourcePaths:Object.values(this.state.requests)
+        .filter(r=>isSafeToRetryLookup(r)||
+          isSafeToRetryInterrupted(r,this.state.downloads))
+        .map(r=>r.sourcePath),
       exportedAt:iso(),summary:this.summary(),
       note:"Names and full paths are recorded as received. Source attribution for delayed downloads is probabilistic; timeout is not a failure or permission to re-click."};
   }
