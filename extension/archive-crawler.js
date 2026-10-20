@@ -73,7 +73,8 @@
     }
 
     pathOf(parent,child) {
-      if(child==="." || child===".." || child.includes("/") || child.includes("\\") || !child)
+      if(child==="." || child===".." || child.includes("/") || child.includes("\\") ||
+         !child||["__proto__","prototype","constructor"].includes(child.toLowerCase()))
         throw new Error("unsafe-folder-name");
       const path=(parent ? parent+"/" : "")+child;
       if(path.split("/").length>this.maxDepth)throw new Error("maximum-depth-exceeded");
@@ -97,12 +98,14 @@
            dir.path!==path||!Array.isArray(dir.entries)||
            dir.entries.length>this.maxObjects||
            (path&&path.split("/").some(part=>!part||part==="."||part===".."||
-             part.length>200||/[\\\\\u0000-\u001f]/.test(part))))
+             part.length>200||["__proto__","prototype","constructor"].includes(part.toLowerCase())||
+             /[\\\\\u0000-\u001f]/.test(part))))
           throw new Error("invalid-crawl-checkpoint-path");
         const names=new Set();
         for(const entry of dir.entries){
           if(!entry||typeof entry.name!=="string"||
              !/^[^\u0000-\u001f/\\\\]{1,200}$/.test(entry.name)||
+             ["__proto__","prototype","constructor"].includes(entry.name.toLowerCase())||
              !["file","folder"].includes(entry.kind)||
              names.has(entry.name.normalize("NFC").toLowerCase()))
             throw new Error("invalid-crawl-checkpoint-entry");
