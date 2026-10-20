@@ -181,7 +181,16 @@
       if(!collection.ok || !collection.complete)
         return {ok:false,error:collection.error || "cannot-read-full-root-list"};
       try{return this.push("",collection);}
-      catch(error){this.halted=true;return {ok:false,error:error.message};}
+      catch(error){
+        this.halted=true;
+        // A nested folder may have replaced the root after a lost iframe.
+        // Without an explicit root breadcrumb, do not throw away the saved
+        // inventory and misinterpret that child as a new archive root.
+        if(checkpoint&&String(error.message||"")==="checkpoint-directory-changed:"&&
+           pathHint!=="/"&&pathHint!==".")
+          return {ok:false,error:"archive-root-unverified-for-checkpoint-reset"};
+        return {ok:false,error:error.message};
+      }
     }
 
     async locate(name,expectedKind) {
