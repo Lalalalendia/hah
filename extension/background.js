@@ -236,10 +236,21 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       respond(await rawHarvest.arm(String(message.folder||""),String(message.filename||"")));
       return;
     }
+    if(message.kind==="RR_HARVEST_DISPATCH") {
+      if(sender.frameId!==0)throw new Error("Only parent frame can dispatch a click");
+      respond(await rawHarvest.dispatch(String(message.folder||""),String(message.filename||"")));
+      return;
+    }
+    if(message.kind==="RR_HARVEST_CHECK") {
+      if(sender.frameId!==0)throw new Error("Only parent frame can check a download");
+      respond(await rawHarvest.check(String(message.folder||""),String(message.filename||"")));
+      return;
+    }
     if(message.kind==="RR_HARVEST_SENT") {
       if(sender.frameId!==0)throw new Error("Only parent frame can confirm archive-row action");
       respond(await rawHarvest.sent(String(message.folder||""),
-        String(message.filename||""),message.clicked===true,String(message.reason||"")));
+        String(message.filename||""),message.clicked===true,String(message.reason||""),
+        message.definiteFailure===true));
       return;
     }
     if(message.kind==="RR_HARVEST_STATUS") {
