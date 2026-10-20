@@ -22,6 +22,8 @@
   let tree = null;
   let treePhase = "";
   let treeFrame = null;
+  let harvestSummary = null;
+  let harvestLoopActive = false;
 
   function show(message) {
     events.unshift(new Date().toLocaleTimeString() + " " + message);
@@ -63,6 +65,19 @@
     const candidateFolders = bestFrame()?.folders || 0;
     const candidateUnknown = bestFrame()?.unknown || 0;
     const best = bestFrame();
+    if(el("rr-harvest")){
+      el("rr-harvest").textContent=harvestLoopActive ? "Остановить после текущего файла" :
+        "Скачать всё";
+      el("rr-harvest").disabled=scanning || (running&&!harvestLoopActive);
+    }
+    if(el("rr-harvest-count")){
+      const h=harvestSummary;
+      el("rr-harvest-count").textContent=h ?
+        ("Запрошено файлов: "+h.requested+" · завершилось загрузок: "+h.completed+
+        " · другое имя: "+h.differentNames+" · не удалось связать: "+h.unattributed+
+        " · ожидает: "+h.unresolved) :
+        "Уже загруженное будет пропущено. Файлы сохраняются в одной папке, с именами Яндекса.";
+    }
     if (el("rr-status")) el("rr-status").textContent = scanning ?
       "Сканирование кадров браузера..." :
       (best ? ("Файлов: "+candidateFiles+" · папок: "+candidateFolders+" · неопределённых: "+candidateUnknown+
@@ -128,50 +143,21 @@
     if (panel) { panel.remove(); panel=null; return; }
     panel=document.createElement("section");
     panel.id="rr-recovery-panel";
-    panel.innerHTML = [
-      '<header><strong>RAR Rescue v0.10</strong><button id="rr-close" title="Закрыть">×</button></header>',
-      '<p>Диск 2.rar — 1286 объектов, включая папки. Полное восстановление сохраняет пути и ведёт журнал.</p>',
-      '<div class="rr-actions"><button id="rr-scan">1. Найти файлы</button><button id="rr-check">2. Учесть скачанный README</button></div>',
-      '<div class="rr-actions"><button id="rr-native">3. Нативный тест README</button></div>',
-      '<div class="rr-actions"><button id="rr-pilot">Проверить автоматический клик</button></div>',
-      '<p id="rr-status" role="status"></p><p id="rr-found"></p>',
-      '<label>Путь только для ручных проверок (при автоматической загрузке определяется из карты)<input id="rr-folder" type="text" placeholder="для корня оставить пустым" autocomplete="off"></label>',
-      '<div class="rr-actions"><button id="rr-inventory">4. Обойти все папки</button><button id="rr-stop">Остановить</button></div>',
-      '<div class="rr-actions"><button id="rr-nested">5. Проверить 2 вложенных файла</button></div>',
-      '<div class="rr-actions"><button id="rr-resume">Восстановить подтверждение без повторного скачивания</button></div>',
-      '<p id="rr-nested-plan"></p>',
-      '<div class="rr-actions"><button id="rr-review">Проверить спорные загрузки</button></div>',
-      '<p id="rr-resume-status"></p>',
-      '<div class="rr-actions"><button id="rr-recover">6. Продолжить восстановление</button><button id="rr-report">Отчёт JSON</button></div>',
-      '<div class="rr-actions"><button id="rr-import">Импортировать карту JSON</button><input id="rr-import-input" type="file" accept=".json,application/json" style="display:none"></div>',
-      '<div class="rr-actions"><button id="rr-empty">Создать пустые каталоги</button></div>',
-      '<p id="rr-tree"></p>',
+    panel.innerHTML=[
+      '<header><strong>RAR Rescue v0.11</strong><button id="rr-close" title="Закрыть">×</button></header>',
+      '<p>Диск 2.rar · автоматическая выгрузка всех доступных файлов.</p>',
+      '<div class="rr-actions"><button id="rr-harvest">Скачать всё</button></div>',
+      '<p id="rr-harvest-count"></p>',
       '<p id="rr-progress" role="status"></p>',
-      '<div class="rr-actions"><button id="rr-copy">Скопировать диагностику</button></div>',
       '<pre id="rr-log"></pre>',
-      '<small>После корневого автотеста проверь два файла в разных вложенных папках. Путь вычисляется автоматически из манифеста, а результат проверяется по точному пути браузерной загрузки. Только после успешной двойной проверки доступна полная очередь. Файлы не запускаются.</small>'
+      '<small>Одна папка для всех полученных файлов. Имена — ровно те, что вернул Яндекс, с автоматическими суффиксами браузера при совпадениях. Полный журнал сохраняется автоматически.</small>'
     ].join("");
     document.body.append(panel);
     el("rr-close").addEventListener("click",()=>{panel.remove();panel=null;});
-    el("rr-scan").addEventListener("click",()=>{void scan();});
-    el("rr-check").addEventListener("click",()=>{void inspectReadme();});
-    el("rr-pilot").addEventListener("click",()=>{void pilot();});
-    el("rr-native").addEventListener("click",()=>{void nativePilot();});
-    el("rr-inventory").addEventListener("click",()=>{void inventoryTree();});
-    el("rr-nested").addEventListener("click",()=>{void acceptNestedPaths();});
-    el("rr-resume").addEventListener("click",()=>{void restoreApproval();});
-    el("rr-review").addEventListener("click",()=>{void reviewPending();});
-    el("rr-recover").addEventListener("click",()=>{void recoverTree();});
-    el("rr-report").addEventListener("click",()=>{exportReport();});
-    el("rr-import").addEventListener("click",()=>el("rr-import-input").click());
-    el("rr-import-input").addEventListener("change",e=>{
-      const file=e.target.files?.[0];if(file)void importTreeFile(file);
-      e.target.value="";
+    el("rr-harvest").addEventListener("click",()=>{
+      if(harvestLoopActive){stopRequested=true;show("Остановка после текущего запроса.");}
+      else void harvestAll();
     });
-    el("rr-empty").addEventListener("click",()=>{void createEmptyDirectories();});
-    el("rr-stop").addEventListener("click",()=>{stopRequested=true;show("Остановить после текущего файла.");});
-    el("rr-copy").addEventListener("click",()=>{void diagnostics();});
-    el("rr-folder").addEventListener("change",()=>{approved=null;render();});
     render();
     void scan();
   }
@@ -774,6 +760,141 @@
     return result;
   }
 
+  async function exportAutomaticHarvestReport(){
+    const report=await send({kind:"RR_HARVEST_REPORT"});
+    const ledger=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY]||{};
+    const legacy=Object.entries(ledger)
+      .filter(([path])=>path.startsWith("Disk-2.rar/"))
+      .map(([path,item])=>({
+        sourcePath:path.slice("Disk-2.rar/".length),
+        state:item.state,bytes:Number(item.bytes)||0,
+        reason:String(item.reason||"").slice(0,160)
+      }));
+    const merged={
+      ...report,
+      archive:"Диск 2.rar",
+      sourceManifest:{objects:tree?.observedObjects||null,
+        files:Object.keys(tree?.files||{}).length,
+        directories:Object.keys(tree?.directories||{}).length,
+        sourcePaths:Object.keys(tree?.files||{})},
+      legacyRequests:legacy,
+      note:"Files saved using Yandex/browser-returned basenames in one flat recovery folder. Attribution to a clicked source is not proof of file identity. Compare downloads later."
+    };
+    const uri=URL.createObjectURL(new Blob([JSON.stringify(merged,null,2)],
+      {type:"application/json;charset=utf-8"}));
+    const link=document.createElement("a");
+    link.href=uri;link.download="Disk-2.rar-download-log.json";
+    document.body.append(link);link.click();link.remove();
+    setTimeout(()=>URL.revokeObjectURL(uri),30000);
+  }
+
+  async function harvestAll(){
+    if(harvestLoopActive)return;
+    if(running)return;
+    harvestLoopActive=true;
+    stopRequested=false;
+    render();
+    let captureBegun=false;
+    let clicked=0,skipped=0,failedActions=0;
+    try{
+      // All discovery and inventory work happens within this one button.
+      if(!bestFrame())await scan();
+      if(!tree?.complete){
+        const restored=(await chrome.storage.local.get(TREE_KEY))[TREE_KEY];
+        if(restored?.complete)tree=restored;
+      }
+      if(!tree?.complete)await inventoryTree();
+      if(!tree?.complete || Object.keys(tree.files||{}).length!==1199)
+        throw new Error("Не удалось получить полную карту RAR. Скачивание не начато.");
+      const frame=bestFrame();
+      if(!frame)throw new Error("Просмотрщик Яндекса не найден");
+      running=true;treePhase="raw-harvest";treeFrame=frame.frameId;
+      const legacy=await countDownloads();
+      const previous=await send({kind:"RR_HARVEST_REPORT"});
+      const already=previous.requests||{};
+      const groups=new Map();
+      for(const file of Object.values(tree.files)){
+        const old=legacy["Disk-2.rar/"+file.sourcePath];
+        if(old || already[file.sourcePath] ||
+           file.status==="downloaded" || file.status==="needs-review"){
+          skipped++;
+          continue;
+        }
+        const list=groups.get(file.folder)||[];
+        list.push(file);
+        groups.set(file.folder,list);
+      }
+      if(!groups.size){
+        harvestSummary=await send({kind:"RR_HARVEST_STATUS"});
+        notice="Все исходные позиции уже обработаны или ожидают проверки; сохраняю журнал.";
+        show(notice);
+        await exportAutomaticHarvestReport();
+        return;
+      }
+      await send({kind:"RR_HARVEST_BEGIN",total:1199});
+      captureBegun=true;
+      await beginKnownPathNavigation(frame.frameId);
+      const folders=[...groups.keys()].sort((a,b)=>a.localeCompare(b));
+      notice="Запускаю "+folders.length+" каталогов, "+[...groups.values()].reduce((n,a)=>n+a.length,0)+
+        " новых запросов. Запись без переименования полученных файлов.";
+      show(notice);
+      for(const dir of folders){
+        if(stopRequested)break;
+        await goToKnownDirectory(frame.frameId,dir);
+        for(const file of groups.get(dir)){
+          if(stopRequested)break;
+          const arm=await send({kind:"RR_HARVEST_ARM",folder:file.folder,filename:file.name});
+          if(arm.skipped){skipped++;continue;}
+          try{
+            const action=await inFrame(frame.frameId,{
+              kind:"RR_SENSOR_TRIGGER",name:file.name,pilot:false,
+              allowLocate:true,verifyNavigation:true,expectedFolder:dir,
+              approvedMode:"label",approvedSlots:2
+            });
+            if(!action.clicked)throw new Error(action.error||"Не нажалась кнопка файла");
+            await send({kind:"RR_HARVEST_SENT",folder:file.folder,filename:file.name,
+              clicked:true});
+            clicked++;
+          }catch(error){
+            await send({kind:"RR_HARVEST_SENT",folder:file.folder,filename:file.name,
+              clicked:false,reason:String(error.message||error).slice(0,150)});
+            failedActions++;
+          }
+          progress="Обработано запросов: "+(clicked+failedActions)+
+            "; пропущено ранее: "+skipped+"; текущий исходный путь: "+file.sourcePath;
+          render();
+          if((clicked+failedActions)%10===0){
+            harvestSummary=await send({kind:"RR_HARVEST_STATUS"});
+            render();
+          }
+          // Restrict bursts. We intentionally do not wait for Yandex to
+          // return the exact requested name, as it sometimes returns another
+          // member. Browser downloads keep flowing while the next row is visited.
+          await sleep(2200);
+        }
+      }
+      notice=stopRequested ?
+        "Остановлено после текущего запроса. Нажми «Скачать всё» для продолжения." :
+        "Все исходные позиции пройдены. Яндекс может ещё присылать файлы; журнал сохраняется.";
+      show(notice);
+      try{await goToKnownDirectory(frame.frameId,"");}catch(_){}
+    }catch(error){
+      notice="Сбор остановлен: "+String(error.message||error)+
+        ". Уже выгруженное сохранено. Запусти той же кнопкой для продолжения.";
+      show(notice);
+    }finally{
+      if(captureBegun){
+        try{
+          await send({kind:"RR_HARVEST_STOP"});
+          harvestSummary=await send({kind:"RR_HARVEST_STATUS"});
+          await exportAutomaticHarvestReport();
+        }catch(error){show("Журнал сохранён локально, но экспорт JSON не удался: "+error.message);}
+      }
+      running=false;harvestLoopActive=false;stopRequested=false;treePhase="";treeFrame=null;
+      progress="";render();
+    }
+  }
+
   async function recoverTree(){
     if(running || !approved || !tree || !tree.scanned || !tree.complete ||
       tree.nestedPilot?.passed!==true)return;
@@ -961,7 +1082,7 @@
 
   async function diagnostics() {
     const report={
-      tool:"RAR Rescue v0.10",
+      tool:"RAR Rescue v0.11",
       targetArchive:"Disk 2.rar",
       frames:[...frames.values()].map(x=>({
         id:x.frameId,host:x.host,count:x.count,folders:x.folders,unknown:x.unknown,
