@@ -848,36 +848,65 @@
         await goToKnownDirectory(frame.frameId,dir);
         for(const file of groups.get(dir)){
           if(stopRequested)break;
-          const arm=await send({kind:"RR_HARVEST_ARM",folder:file.folder,filename:file.name});
-          if(arm.skipped){skipped++;continue;}
+          // Preflight may scroll a virtualized directory, without clicking.
+          // Do this before the 120-second click deadline starts.
+          let preflight;
           try{
-            // Chrome may report the download before the frame call returns.
-            // Associate the archive source path BEFORE invoking the click.
-            await send({kind:"RR_HARVEST_SENT",folder:file.folder,filename:file.name,
-              clicked:true});
-            const action=await inFrame(frame.frameId,{
+            preflight=await inFrame(frame.frameId,{
               kind:"RR_SENSOR_TRIGGER",name:file.name,pilot:false,
               allowLocate:true,verifyNavigation:true,expectedFolder:dir,
+              approvedMode:"label",approvedSlots:2,inspectOnly:true
+            });
+          }catch(error){preflight={ok:false,error:String(error.message||error)};}
+          const arm=await send({kind:"RR_HARVEST_ARM",folder:file.folder,filename:file.name});
+          if(arm.skipped){skipped++;continue;}
+          const dispatched=await send({kind:"RR_HARVEST_DISPATCH",folder:file.folder,filename:file.name});
+          if(!dispatched.ok)throw new Error(dispatched.error||"Нельзя зафиксировать клик");
+          try{
+            if(!preflight?.ok||!preflight.inspected)
+              throw new Error(preflight?.error||"Не найдена кнопка файла");
+            const action=await inFrame(frame.frameId,{
+              kind:"RR_SENSOR_TRIGGER",name:file.name,pilot:false,
+              allowLocate:false,verifyNavigation:true,expectedFolder:dir,
               approvedMode:"label",approvedSlots:2
             });
             if(!action.clicked)throw new Error(action.error||"Не нажалась кнопка файла");
+            const sent=await send({kind:"RR_HARVEST_SENT",folder:file.folder,
+              filename:file.name,clicked:true});
+            if(!sent.ok)throw new Error(sent.error||"Ошибка подтверждения клика");
             clicked++;
           }catch(error){
-            await send({kind:"RR_HARVEST_SENT",folder:file.folder,filename:file.name,
-              clicked:false,reason:String(error.message||error).slice(0,150)});
+            // No re-click, including uncertain browser/frame responses.
+            await send({kind:"RR_HARVEST_SENT",folder:file.folder,
+              filename:file.name,clicked:false,
+              definiteFailure:!preflight?.ok,
+              reason:String(error.message||error).slice(0,160)}).catch(()=>{});
             failedActions++;
           }
-          progress="Обработано запросов: "+(clicked+failedActions)+
-            "; пропущено в текущем сборе: "+skipped+"; текущий исходный путь: "+file.sourcePath;
-          render();
-          if((clicked+failedActions)%10===0){
-            harvestSummary=await send({kind:"RR_HARVEST_STATUS"});
-            render();
+          // The next file MUST NOT be clicked before Chrome reports a
+          // terminal download or exactly 120 seconds have passed.
+          let result={state:"waiting",remainingMs:120000};
+          let lastCountRefresh=0;
+          while(result.state==="waiting"){
+            result=await send({kind:"RR_HARVEST_CHECK",folder:file.folder,filename:file.name});
+            if(!result.ok)throw new Error(result.error||"Нет учёта загрузки");
+            const seconds=Math.max(0,Math.ceil((result.remainingMs||0)/1000));
+            progress="Нажатий: "+clicked+"; ожидание: "+seconds+" с; "+
+              "последний исходный путь: Disk-2.rar/"+file.sourcePath+
+              "; результат: "+result.state;
+            if(Date.now()-lastCountRefresh>2200||result.state!=="waiting"){
+              harvestSummary=await send({kind:"RR_HARVEST_STATUS"});
+              render();lastCountRefresh=Date.now();
+            }
+            if(result.state!=="waiting")break;
+            await sleep(Math.max(1,Math.min(850,result.remainingMs||850)));
           }
-          // Restrict bursts. We intentionally do not wait for Yandex to
-          // return the exact requested name, as it sometimes returns another
-          // member. Browser downloads keep flowing while the next row is visited.
-          await sleep(2200);
+          if(result.state==="timed_out")show("120 секунд истекли для "+file.sourcePath+
+            ". Повторного клика нет. Перехожу к следующему файлу.");
+          else if(result.state==="interrupted")show("Загрузка прервана для "+file.sourcePath+
+            ". Причину сохраняю в журнал; очередь продолжается.");
+          else if(result.state==="not-clicked")show("Кнопка не нажалась: "+file.sourcePath+
+            ". Пропускаю, журнал сохраняется.");
         }
       }
       notice=stopRequested ?
