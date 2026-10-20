@@ -39,18 +39,24 @@ async function claim(r,s,scope,id,name,folder){
   assert((await r.start(first,a,2)).ok);
   const ar=await claim(r,first,a,101,"same.txt","FIRST");
   assert.equal(ar.output.filename,"Сборник.rar/FIRST/same.txt");
-  assert((await r.start(second,b,1)).ok,"Two archive tabs can have independent queues");
+  assert((await r.start(second,b,2)).ok,"Two archive tabs can have independent queues");
   const br=await claim(r,second,b,201,"same.txt","OTHER");
   assert.equal(br.output.filename,"Второй.rar/OTHER/same.txt");
   assert.equal((await r.bind(first,a)),ar.worker);
   assert.equal((await r.bind(second,b)),br.worker);
   // Browser events are selected by tab even when names and service hosts are equal.
+  await ar.worker.arm("NEXT","other.txt");
+  await ar.worker.dispatch("NEXT","other.txt");
+  await ar.worker.sent("NEXT","other.txt",true);
   const pendingA=make(102,11,"other.txt");
   assert(await r.created(pendingA));
-  assert.equal((await r.determine(pendingA)).filename,"Сборник.rar/other.txt");
+  assert.equal((await r.determine(pendingA)).filename,"Сборник.rar/NEXT/other.txt");
+  await br.worker.arm("EXTRA","unrelated.bin");
+  await br.worker.dispatch("EXTRA","unrelated.bin");
+  await br.worker.sent("EXTRA","unrelated.bin",true);
   const pendingB=make(202,22,"unrelated.bin");
   assert(await r.created(pendingB));
-  assert.equal((await r.determine(pendingB)).filename,"Второй.rar/unrelated.bin");
+  assert.equal((await r.determine(pendingB)).filename,"Второй.rar/EXTRA/unrelated.bin");
   // A detached Yandex response has no unique owner while two scopes are live.
   const detached=make(250,-1,"same.txt");
   assert.equal(await r.created(detached),false);
@@ -105,7 +111,7 @@ async function claim(r,s,scope,id,name,folder){
   assert.equal((await restarted.determine(recycled)).handled,false);
   assert(!stale.state.downloads["254"],"New tab contents must not attach to stale scope");
   // Explicit new start on a verified matching link reactivates the scope.
-  assert((await restarted.start(second,b,1)).ok);
+  assert((await restarted.start(second,b,2)).ok);
   assert.equal(stale.invalidTab,false);
   // Scope metadata, source URL and browser download IDs must match owner.
   await assert.rejects(()=>r.bind(first,b),/identity|match/i);
