@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Yandex RAR Rescue",
-  "version": "0.12.0",
-  "description": "One-button archive collection preserving source folders and actual Yandex filenames; writes mismatch report.",
+  "version": "0.13.0",
+  "description": "One-button Yandex RAR download: 120-second maximum per file, original directories, actual names, independent click/download counters and full-path audit.",
   "permissions": [
     "downloads",
     "storage"
