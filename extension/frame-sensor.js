@@ -119,7 +119,13 @@
       return false;
     }
     if (message.kind === "RR_SENSOR_CRAWL_BEGIN") {
-      void crawler.begin(message.archiveName||null,message.checkpoint||null).then(sendResponse,error=>
+      void (async()=>{
+        if(crawler.frames.length>1){
+          const rewound=await crawler.rewindToRoot(message.archiveName||null);
+          if(!rewound.ok)return rewound;
+        }
+        return crawler.begin(message.archiveName||null,message.checkpoint||null);
+      })().then(sendResponse,error=>
         sendResponse({ok:false,error:String(error.message || error)}));
       return true;
     }
