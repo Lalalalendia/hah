@@ -25,10 +25,10 @@ const api={
   }
 };
 const c={chrome:api,Date,URL};c.globalThis=c;vm.createContext(c);
-for(const file of ["common.js","archive-scope.js","harvest-worker.js","harvest-router.js"])
+for(const file of ["common.js","archive-scope.js","harvest-worker.js","harvest-router.js","viewer-channel.js"])
   vm.runInContext(fs.readFileSync(path.join(dir,file),"utf8"),c);
 vm.runInContext(fs.readFileSync(path.join(dir,"background.js"),"utf8")
-  .replace('importScripts("common.js","archive-scope.js","harvest-worker.js","harvest-router.js");',''),c);
+  .replace('importScripts("common.js","archive-scope.js","harvest-worker.js","harvest-router.js","viewer-channel.js");',''),c);
 function tab(id,key){
   const url="https://disk.yandex.ru/d/"+key;
   return {frameId:0,tab:{id,url},url};
