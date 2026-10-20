@@ -15,7 +15,7 @@ const normPath=value=>String(value||"").replace(/\\/g,"/");
 const basename=value=>normPath(value).split("/").pop().slice(0,220);
 const ownReport=(item,rootName=SAFE_ROOT)=>{
   const actual=basename(item?.filename).normalize("NFC").toLowerCase()
-    .replace(/ \\([0-9]+\\)(?=\\.json$)/i,"");
+    .replace(/ \([0-9]+\)(?=\.json$)/i,"");
   return actual===(rootName+"-download-log.json").normalize("NFC").toLowerCase();
 };
 const sourcePath=(folder,name)=>(folder?folder+"/":"")+name;
