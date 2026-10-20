@@ -37,6 +37,19 @@ class HarvestRouter {
       if(!scope||this.workers.has(scope.scopeId))continue;
       const worker=new this.Worker(this.api,this.utils,scope);
       await worker.ready;
+      // A tab ID from an earlier browser session is not ownership evidence.
+      // If Chrome cannot confirm the original tab, retain its work in tail
+      // state but do not keep the old capture collecting indefinitely.
+      if(worker.state.phase==="collecting"&&typeof this.api.tabs?.get==="function"){
+        let valid=false;
+        try{
+          const tab=await this.api.tabs.get(worker.state.tabId);
+          const url=new URL(String(tab?.url||""));
+          valid=url.protocol==="https:"&&url.hostname==="disk.yandex.ru"&&
+            "yandex-public:"+url.pathname.replace(/\/$/,"")===scope.sourceKey;
+        }catch(_){}
+        if(!valid)await worker.stop();
+      }
       this.workers.set(scope.scopeId,worker);
     }
   }
@@ -96,7 +109,8 @@ class HarvestRouter {
     if(owned.length===1)return owned[0];
     if(owned.length>1)return null;
     if(this.legacy.state.downloads[id])return this.legacy;
-    const active=all.filter(w=>w.recording()&&w.sourceAllowed(item));
+    const active=all.filter(w=>w.recording()&&w.sourceAllowed(item)&&
+      (w.state.phase==="collecting"||w.summary().unresolvedCount>0));
     const sameTab=active.filter(w=>w.state.tabId===item.tabId);
     if(sameTab.length===1)return sameTab[0];
     if(sameTab.length>1)return null;
@@ -141,8 +155,25 @@ class HarvestRouter {
     await this.ready;
     const owners=[...this.workers.values(),this.legacy].filter(w=>
       Object.prototype.hasOwnProperty.call(w.state.downloads,String(id)));
-    if(owners.length!==1)return false;
-    return owners[0].changed(id,item);
+    if(owners.length===1)return owners[0].changed(id,item);
+    if(owners.length>1)return false;
+    const data=await this.api.storage.local.get(QUARANTINE_KEY);
+    const rows=Array.isArray(data[QUARANTINE_KEY])?data[QUARANTINE_KEY]:[];
+    const entry=rows.find(row=>row.id===id);
+    if(!entry)return false;
+    entry.state=String(item?.state||"unknown");
+    entry.bytes=Number(item?.bytesReceived)||0;
+    entry.actualSavedFullPath=String(item?.filename||"");
+    entry.error=String(item?.error||"").slice(0,160);
+    await this.api.storage.local.set({[QUARANTINE_KEY]:rows});
+    return true;
+  }
+  async report(sender,raw){
+    const worker=await this.bind(sender,raw);
+    const result=await worker.report();
+    const data=await this.api.storage.local.get(QUARANTINE_KEY);
+    return {...result,unattributedBrowserDownloads:Array.isArray(data[QUARANTINE_KEY])
+      ?data[QUARANTINE_KEY].slice(-300):[]};
   }
   recording(){return [...this.workers.values(),this.legacy].some(w=>w.recording());}
   async removedTab(tabId){
