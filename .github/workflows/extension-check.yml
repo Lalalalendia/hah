@@ -41,6 +41,7 @@ jobs:
           node --check extension/harvest-worker.js
           node --check extension/harvest-router.js
           node --check extension/tests/harvest-router.cjs
+          node --check extension/tests/output-reservation.cjs
           node --check extension/tests/harvest-120s.cjs
           node --check extension/tests/no-click-resume.cjs
           node --check extension/frame-sensor.js
@@ -61,6 +62,7 @@ jobs:
           node extension/tests/generic-manifest.cjs
           node extension/tests/generic-harvest.cjs
           node extension/tests/harvest-router.cjs
+          node extension/tests/output-reservation.cjs
           node extension/tests/recovery-plan.cjs
       - name: Chromium archive DOM integration fixture
         run: |
