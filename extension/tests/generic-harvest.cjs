@@ -65,6 +65,7 @@ const item=(id,name,state="in_progress",error=null)=>({
   await w.stop();
   const resume=worker(a);
   assert.equal((await resume.status()).total,3);
+  assert((await resume.begin(13,3)).ok,"Resume must explicitly activate capture before arming");
   assert((await resume.arm("","slow.dat")).skipped);
   const other=worker(b);
   assert.equal((await other.status()).total,0);
