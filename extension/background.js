@@ -14,6 +14,32 @@ const ready=Promise.all([
   Object.assign(watchers,session[STATE_KEY]||{});
 }).catch(()=>{});
 
+const OUTPUT_OWNERS_KEY="rr_output_owners_v15";
+let outputReservationQueue=Promise.resolve();
+function reserveOutputRoot(sender,raw){
+  const job=outputReservationQueue.then(async()=>{
+    if(!raw||typeof raw.archiveName!=="string"||
+       !Number.isInteger(sender?.tab?.id))throw Error("Missing archive identity");
+    const scope=RarRescueArchiveScope.fromYandexPublicLink(
+      sender.tab.url,raw.archiveName);
+    if(scope.scopeId!==raw.scopeId||scope.outputRoot!==raw.outputRoot)
+      throw Error("Archive does not match the current public link");
+    const store=await chrome.storage.local.get(OUTPUT_OWNERS_KEY);
+    const owners=store[OUTPUT_OWNERS_KEY]||{};
+    const root=scope.outputRoot.normalize("NFC").toLowerCase();
+    if(Object.prototype.hasOwnProperty.call(owners,root)&&
+       owners[root]!==scope.scopeId)
+      throw Error("Output folder is reserved by another archive; choose a distinct target");
+    if(owners[root]!==scope.scopeId){
+      owners[root]=scope.scopeId;
+      await chrome.storage.local.set({[OUTPUT_OWNERS_KEY]:owners});
+    }
+    return {ok:true,scopeId:scope.scopeId,outputRoot:scope.outputRoot};
+  });
+  outputReservationQueue=job.catch(()=>{});
+  return job;
+}
+
 async function saveWatchers() {
   await chrome.storage.session.set({ [STATE_KEY]: watchers });
 }
@@ -218,6 +244,10 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       const result = await chrome.tabs.sendMessage(tabId, payload, { frameId });
       respond(result && typeof result === "object" ? result : {ok:false,error:"Viewer did not respond"});
       return;
+    }
+    if(message.kind==="RR_RESERVE_OUTPUT_ROOT") {
+      if(sender.frameId!==0)throw Error("Only main archive panel may reserve output");
+      respond(await reserveOutputRoot(sender,message.scope));return;
     }
     if(message.kind==="RR_HARVEST_BEGIN") {
       if(sender.frameId!==0)throw new Error("Only parent frame can start raw capture");
