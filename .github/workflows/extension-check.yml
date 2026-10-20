@@ -33,6 +33,7 @@ jobs:
           node --check extension/archive-dom.js
           node --check extension/manifest-model.js
           node --check extension/tests/generic-manifest.cjs
+          node --check extension/tests/generic-harvest.cjs
           node --check extension/recovery-plan.js
           node --check extension/tests/recovery-plan.cjs
           node --check extension/archive-crawler.js
@@ -56,6 +57,7 @@ jobs:
           node extension/tests/no-click-resume.cjs
           node extension/tests/import-manifest.cjs
           node extension/tests/generic-manifest.cjs
+          node extension/tests/generic-harvest.cjs
           node extension/tests/recovery-plan.cjs
       - name: Chromium archive DOM integration fixture
         run: |
