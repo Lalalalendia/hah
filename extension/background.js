@@ -49,8 +49,16 @@ function pageAllowed(sender) {
   if (!sender || !sender.tab || !Number.isInteger(sender.tab.id)) return false;
   try { const topHost = new URL(sender.tab.url).hostname;
     const frameHost = new URL(sender.url || sender.tab.url).hostname;
-    return topHost === "disk.yandex.ru" &&
-      ["disk.yandex.ru", "docviewer.yandex.ru", "docviewer.360.yandex.ru"].includes(frameHost); }
+    const allowed=["disk.yandex.ru","docviewer.yandex.ru","docviewer.360.yandex.ru"];
+    let originHost="";
+    try{originHost=new URL(sender.origin||"").hostname;}catch(_){}
+    if(!originHost && String(sender.url||"").startsWith("blob:")){
+      try{originHost=new URL(sender.url).origin.split("://").pop();}catch(_){}
+    }
+    return topHost==="disk.yandex.ru" &&
+      (allowed.includes(frameHost)||
+        (["about:","blob:"].includes(new URL(sender.url||sender.tab.url).protocol)&&
+         allowed.includes(originHost))); }
   catch (_) { return false; }
 }
 
