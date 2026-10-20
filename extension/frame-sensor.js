@@ -4,6 +4,7 @@
   "use strict";
   const dom = globalThis.RarRescueDOM;
   const crawler = new globalThis.RarRescueCrawler(document,dom);
+  const navigator = new globalThis.RarRescueNavigator(document,dom,crawler);
   const replyToPanel = payload => {
     try { chrome.runtime.sendMessage(payload).catch(() => {}); } catch (_) {}
   };
@@ -60,6 +61,9 @@
         return {ok:false,error:"action-layout-changed",mode:action.mode,slots:action.slotCount};
       }
     }
+    if(message.verifyNavigation===true && !navigator.isAt(String(message.expectedFolder||"")))
+      return {ok:false,error:"current-viewer-path-not-verified",expected:String(message.expectedFolder||""),
+        actual:navigator.currentPath};
     if (action.element.hasAttribute("disabled")) return {ok:false,error:"action-disabled"};
     if (message.inspectOnly === true) {
       return {ok:true,clicked:false,inspected:true,name,mode:action.mode,slots:action.slotCount};
@@ -88,6 +92,20 @@
     if (message.kind === "RR_SENSOR_SCAN") {
       replyToPanel(summarize(message.requestId));
       setTimeout(()=>replyToPanel(summarize(message.requestId)),700);
+      return false;
+    }
+    if (message.kind === "RR_SENSOR_NAV_START") {
+      void navigator.start(message.directories).then(sendResponse,error=>
+        sendResponse({ok:false,error:String(error.message||error).slice(0,200)}));
+      return true;
+    }
+    if (message.kind === "RR_SENSOR_NAV_GOTO") {
+      void navigator.go(message.path).then(sendResponse,error=>
+        sendResponse({ok:false,error:String(error.message||error).slice(0,200)}));
+      return true;
+    }
+    if (message.kind === "RR_SENSOR_NAV_STATUS") {
+      sendResponse(navigator.status());
       return false;
     }
     if (message.kind === "RR_SENSOR_CRAWL_BEGIN") {
