@@ -1,7 +1,7 @@
 const assert=require("node:assert/strict");
 const fs=require("node:fs"),vm=require("node:vm"),path=require("node:path");
 const dir=path.resolve(__dirname,".."),c={URL,Date};c.globalThis=c;vm.createContext(c);
-for(const file of ["common.js","archive-scope.js","harvest-worker.js","harvest-router.js"])
+for(const file of ["common.js","archive-scope.js","harvest-worker.js","harvest-router.js","viewer-channel.js"])
   vm.runInContext(fs.readFileSync(path.join(dir,file),"utf8"),c);
 const scopeApi=c.RarRescueArchiveScope;
 const page="https://disk.yandex.ru/client/disk?session_token=PRIVATE#viewer";
@@ -35,7 +35,7 @@ const chrome={runtime:{onMessage:{addListener(fn){handler=fn;}}},action:{onClick
       .map(key=>[key,local[key]]));},async set(x){Object.assign(local,x);}}}};
 c.chrome=chrome;
 vm.runInContext(fs.readFileSync(path.join(dir,"background.js"),"utf8")
-  .replace('importScripts("common.js","archive-scope.js","harvest-worker.js","harvest-router.js");',""),c);
+  .replace('importScripts("common.js","archive-scope.js","harvest-worker.js","harvest-router.js","viewer-channel.js");',""),c);
 function send(sender,message){return new Promise((resolve,reject)=>{
   try{assert.equal(handler(message,sender,resolve),true);}catch(err){reject(err);}
 });}
