@@ -1,14 +1,54 @@
 /* Manifest V3 service worker. All state stays on the user's machine. */
-importScripts("common.js","harvest-worker.js");
+importScripts("common.js","archive-scope.js","harvest-worker.js");
 "use strict";
 
 const STATE_KEY = "rr_pending";
 const LEDGER_KEY = "rr_ledger";
-const rawHarvest = new globalThis.RarRescueHarvestWorker(chrome,RarRescueUtils);
+const ACTIVE_SCOPE_KEY="rr_active_archive_v15";
+let rawHarvest = new globalThis.RarRescueHarvestWorker(chrome,RarRescueUtils);
 const watchers = {};
-const ready = chrome.storage.session.get(STATE_KEY).then(data => {
-  Object.assign(watchers, data[STATE_KEY] || {});
-}).catch(() => {});
+function storedScope(raw){
+  if(!raw||typeof raw.sourceKey!=="string"||
+     !/^yandex-public:\/d\/[A-Za-z0-9_-]{1,150}$/.test(raw.sourceKey))return null;
+  try{
+    const url="https://disk.yandex.ru"+raw.sourceKey.slice("yandex-public:".length);
+    const canonical=RarRescueArchiveScope.fromYandexPublicLink(url,raw.archiveName);
+    return canonical.scopeId===raw.scopeId?canonical:null;
+  }catch(_){return null;}
+}
+const ready=Promise.all([
+  chrome.storage.session.get(STATE_KEY),
+  chrome.storage.local.get(ACTIVE_SCOPE_KEY)
+]).then(([session,data])=>{
+  Object.assign(watchers,session[STATE_KEY]||{});
+  const restored=storedScope(data[ACTIVE_SCOPE_KEY]);
+  if(restored)rawHarvest=new globalThis.RarRescueHarvestWorker(chrome,RarRescueUtils,restored);
+}).catch(()=>{});
+async function bindHarvestScope(sender,raw){
+  if(!raw){
+    if(rawHarvest.scope)throw Error("This capture requires its archive identity");
+    return rawHarvest; // Legacy fixture only
+  }
+  const candidate=RarRescueArchiveScope.fromYandexPublicLink(sender.tab.url,raw.archiveName);
+  if(raw.scopeId!==candidate.scopeId||raw.outputRoot!==candidate.outputRoot)
+    throw Error("Archive metadata is not tied to the current public URL");
+  if(!rawHarvest.scope||!RarRescueArchiveScope.sameScope(rawHarvest.scope,candidate)){
+    const previous=await rawHarvest.status();
+    if(rawHarvest.recording()&&previous.unresolvedCount>0)
+      throw Error("Another archive has unresolved late browser downloads; do not mix captures");
+    rawHarvest=new globalThis.RarRescueHarvestWorker(chrome,RarRescueUtils,candidate);
+    await rawHarvest.ready;
+    await chrome.storage.local.set({[ACTIVE_SCOPE_KEY]:candidate});
+  }
+  return rawHarvest;
+}
+function verifyHarvestOwner(sender){
+  if(!rawHarvest.scope)return;
+  const candidate=RarRescueArchiveScope.fromYandexPublicLink(
+    sender.tab.url,rawHarvest.scope.archiveName);
+  if(candidate.sourceKey!==rawHarvest.scope.sourceKey)
+    throw Error("This tab does not own the active archive capture");
+}
 
 async function saveWatchers() {
   await chrome.storage.session.set({ [STATE_KEY]: watchers });
@@ -224,30 +264,36 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         await markReview(record,"Superseded by raw as-returned archive collection");
       for(const id of Object.keys(watchers))delete watchers[id];
       await saveWatchers();
-      const result=await rawHarvest.begin(tabId,1199);
+      await bindHarvestScope(sender,message.scope||null);
+      const result=await rawHarvest.begin(tabId,Number(message.total??1199));
       respond(result);return;
     }
     if(message.kind==="RR_HARVEST_STOP") {
       if(sender.frameId!==0)throw new Error("Only parent frame can stop raw capture");
+      verifyHarvestOwner(sender);
       respond(await rawHarvest.stop());return;
     }
     if(message.kind==="RR_HARVEST_ARM") {
       if(sender.frameId!==0)throw new Error("Only parent frame can reserve raw source");
+      verifyHarvestOwner(sender);
       respond(await rawHarvest.arm(String(message.folder||""),String(message.filename||"")));
       return;
     }
     if(message.kind==="RR_HARVEST_DISPATCH") {
       if(sender.frameId!==0)throw new Error("Only parent frame can dispatch a click");
+      verifyHarvestOwner(sender);
       respond(await rawHarvest.dispatch(String(message.folder||""),String(message.filename||"")));
       return;
     }
     if(message.kind==="RR_HARVEST_CHECK") {
       if(sender.frameId!==0)throw new Error("Only parent frame can check a download");
+      verifyHarvestOwner(sender);
       respond(await rawHarvest.check(String(message.folder||""),String(message.filename||"")));
       return;
     }
     if(message.kind==="RR_HARVEST_SENT") {
       if(sender.frameId!==0)throw new Error("Only parent frame can confirm archive-row action");
+      verifyHarvestOwner(sender);
       respond(await rawHarvest.sent(String(message.folder||""),
         String(message.filename||""),message.clicked===true,String(message.reason||""),
         message.definiteFailure===true));
@@ -255,10 +301,12 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     }
     if(message.kind==="RR_HARVEST_STATUS") {
       if(sender.frameId!==0)throw new Error("Only parent frame can inspect raw capture");
+      await bindHarvestScope(sender,message.scope||null);
       respond(await rawHarvest.status());return;
     }
     if(message.kind==="RR_HARVEST_REPORT") {
       if(sender.frameId!==0)throw new Error("Only parent frame can export raw capture");
+      await bindHarvestScope(sender,message.scope||null);
       respond(await rawHarvest.report());return;
     }
     if(message.kind==="RR_PREPARE_RESUME") {
