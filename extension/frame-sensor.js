@@ -2,6 +2,8 @@
    Runs only in approved Yandex document frames. */
 (() => {
   "use strict";
+  if(globalThis.__RarRescueFrameSensorInstalled_v0153)return;
+  globalThis.__RarRescueFrameSensorInstalled_v0153=true;
   const dom = globalThis.RarRescueDOM;
   const crawler = new globalThis.RarRescueCrawler(document,dom);
   const pathNavigator = new globalThis.RarRescueNavigator(document,dom,crawler);
