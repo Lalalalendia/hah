@@ -48,6 +48,11 @@ const item=(id,name,state="in_progress",error=null)=>({
   const done=item(2,"C:\\Downloads\\База.rar\\DEEP\\FOLDER\\unique.bin","complete");
   hist.set(2,done);await w.changed(2,done);
   assert.equal((await w.check("DEEP/FOLDER","unique.bin")).state,"complete");
+  // A repeated onChanged event for the OLD failed download must never undo
+  // successful completion of the NEW retry attempt.
+  await w.changed(1,failed);
+  assert.equal((await w.report()).requests["DEEP/FOLDER/unique.bin"].state,"complete");
+  assert(!(await w.report()).retryableSourcePaths.includes("DEEP/FOLDER/unique.bin"));
   assert((await w.arm("DEEP/FOLDER","unique.bin")).skipped,"Never repeat complete");
   await w.arm("","missing.txt");
   await w.lookupFailed("","missing.txt","file-row-not-visible");
