@@ -932,9 +932,18 @@
 
   function exportReport(){
     if(!tree)return;
+    const p=tree.complete ? RarRescuePlan.pendingDirectories(tree,ledgerSnapshot) : null;
     const data={
       ...tree,
       exportedAt:new Date().toISOString(),
+      resumeReport:p?.ok ? {
+        downloaded:p.skipped,safePending:p.pending,
+        needsReview:p.blockedCount,nameCollisionHeld:p.collisionBlockedCount,
+        accounted:p.accounted,held:p.held,
+        unresolved:p.blocked,
+        nameCollisionPaths:p.collisionBlocked,
+        note:"Unresolved and name-collision files were NOT retried. A late Yandex download may still arrive."
+      } : null,
       note:"Browser download completion is not the same as CRC/SHA verified content. Empty directory paths are listed in directories and may require explicit creation."
     };
     const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],
