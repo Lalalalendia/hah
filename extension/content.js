@@ -74,8 +74,15 @@
     if (!response || !response.ok) throw new Error(response?.error || "Расширение не ответило");
     return response;
   }
-  async function inFrame(id,payload) {
-    return send({kind:"RR_FRAME_CALL",frameId:id,payload});
+  let viewerFrameAlias=null;
+  async function inFrame(id,payload){
+    const target=viewerFrameAlias??id;
+    const result=await send({kind:"RR_FRAME_CALL",frameId:target,payload});
+    if(Number.isInteger(result.viewerFrameId)&&result.viewerFrameId!==target){
+      viewerFrameAlias=result.viewerFrameId;
+      show("Связь с веб-просмотрщиком восстановлена; найден активный iframe.");
+    }
+    return result;
   }
   function folderValue() {
     const value = String(el("rr-folder")?.value || "").trim().replace(/\\/g,"/");
@@ -209,6 +216,7 @@
   }
 
   async function scan() {
+    viewerFrameAlias=null;
     if (running) return;
     frames.clear();scanId=String(Date.now())+"-"+Math.random().toString(36).slice(2);
     scanning=true;approved=null;render();
