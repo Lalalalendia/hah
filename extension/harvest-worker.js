@@ -147,11 +147,6 @@ class RawHarvest {
     const recent=Object.values(this.state.requests)
       .filter(x=>x.clickedAt && !x.assignedDownloadIds.length &&
         now-x.clickedAt>=0 && now-x.clickedAt<MAX_AGE_MS);
-    const exact=recent.filter(x=>
-      reported && x.name.toLowerCase()===reported.toLowerCase());
-    if(exact.length===1){
-      return {request:exact[0],confidence:"matching-name-unverified"};
-    }
     // When Yandex returns a different filename, associate tentatively
     // with the most recent click; clearly record uncertainty in the journal.
     const fresh=recent.filter(x=>now-x.clickedAt<=ACTIVE_ASSOCIATION_MS)
@@ -160,6 +155,11 @@ class RawHarvest {
       return {request:fresh[0],confidence:
         reported.toLowerCase()===fresh[0].name.toLowerCase()?
           "recent-click-name-match-unverified":"recent-click-name-mismatch-unverified"};
+    }
+    const exact=recent.filter(x=>
+      reported && x.name.toLowerCase()===reported.toLowerCase());
+    if(exact.length===1){
+      return {request:exact[0],confidence:"delayed-name-match-unverified"};
     }
     return {request:null,confidence:recent.length?"ambiguous-delayed-response":"unattributed"};
   }
