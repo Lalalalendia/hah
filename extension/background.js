@@ -1,7 +1,8 @@
 /* Manifest V3 service worker. All state stays on the user's machine. */
-importScripts("common.js","archive-scope.js","harvest-worker.js","harvest-router.js");
+importScripts("common.js","archive-scope.js","harvest-worker.js","harvest-router.js","viewer-channel.js");
 "use strict";
 
+const viewerChannel=new globalThis.RarRescueViewerChannel(chrome);
 const STATE_KEY = "rr_pending";
 const LEDGER_KEY = "rr_ledger";
 const rawRouter=new globalThis.RarRescueHarvestRouter(
@@ -241,8 +242,9 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         "RR_SENSOR_CRAWL_BEGIN", "RR_SENSOR_CRAWL_STEP", "RR_SENSOR_CRAWL_STATUS", "RR_SENSOR_NAV_START", "RR_SENSOR_NAV_GOTO", "RR_SENSOR_NAV_STATUS"].includes(payload.kind)) {
         throw new Error("Unsupported viewer command");
       }
-      const result = await chrome.tabs.sendMessage(tabId, payload, { frameId });
-      respond(result && typeof result === "object" ? result : {ok:false,error:"Viewer did not respond"});
+      const delivery=await viewerChannel.invoke(tabId,frameId,payload);
+      respond({...delivery.result,viewerFrameId:delivery.frameId,
+        viewerReconnected:delivery.reconnected});
       return;
     }
     if(message.kind==="RR_RESERVE_OUTPUT_ROOT") {
