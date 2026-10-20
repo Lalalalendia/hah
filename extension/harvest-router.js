@@ -40,7 +40,7 @@ class HarvestRouter {
       // A tab ID from an earlier browser session is not ownership evidence.
       // If Chrome cannot confirm the original tab, retain its work in tail
       // state but do not keep the old capture collecting indefinitely.
-      if(worker.state.phase==="collecting"&&typeof this.api.tabs?.get==="function"){
+      if(worker.recording()&&typeof this.api.tabs?.get==="function"){
         let valid=false;
         try{
           const tab=await this.api.tabs.get(worker.state.tabId);
@@ -50,7 +50,7 @@ class HarvestRouter {
         }catch(_){}
         if(!valid){
           worker.invalidTab=true;
-          await worker.stop();
+          if(worker.state.phase==="collecting")await worker.stop();
         }
       }
       this.workers.set(scope.scopeId,worker);
@@ -96,8 +96,15 @@ class HarvestRouter {
     if(worker.scope){
       for(const old of this.workers.values()){
         if(old===worker)continue;
-        if(old.state.tabId===sender.tab.id&&old.state.phase==="collecting")
+        if(old.state.tabId===sender.tab.id&&old.state.phase==="collecting"){
+          // A delayed Yandex download carries no verified archive ID. Reusing
+          // the same tab for a different archive while an old click is
+          // unresolved would make those bytes indistinguishable.
+          if(old.summary().unresolvedCount>0)
+            throw Error("Previous archive has pending downloads in this tab; use a separate tab");
+          old.invalidTab=true;
           await old.stop();
+        }
       }
     }
     // A prior tab ID is no longer an ownership witness after the operator
