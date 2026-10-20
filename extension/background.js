@@ -249,13 +249,29 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
           reconciled++;
         }
       }
-      if(changes.length)await chrome.storage.local.set({[LEDGER_KEY]:ledger});
+      if(changes.length){
+        // Avoid overwriting a concurrent onChanged completion that wrote the
+        // ledger while we reconciled another filename.
+        const fresh=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY]||{};
+        for(const key of changes){
+          if(fresh[key]?.state==="downloaded")continue;
+          fresh[key]=ledger[key];
+        }
+        await chrome.storage.local.set({[LEDGER_KEY]:fresh});
+      }
       const live=watchers[String(tabId)];
       let active=null;
       if(live){
         const item=live.downloadId!=null?
           history.find(x=>x.id===live.downloadId) :
-          await latestAttemptItem(live);
+          (history.find(x=>{
+            const begun=Date.parse(x.startTime||"");
+            return Number.isFinite(begun) && begun>=live.started-10000 &&
+              RarRescueUtils.isDownloadHost(x.url||x.finalUrl||"") &&
+              sameExpectedFile(String(x.filename||"").replace(/\\/g,"/").split("/").pop(),
+                live.filename) &&
+              ["in_progress","complete","interrupted"].includes(x.state);
+          }) || await latestAttemptItem(live));
         if(item?.state==="complete" || item?.state==="interrupted"){
           await completeFromChrome(live,item);
         } else if(item?.state==="in_progress"){
