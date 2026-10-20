@@ -158,6 +158,48 @@ try:
     assert not mismatched["ok"] and "checkpoint-directory-changed" in mismatched["error"],mismatched
     print("PASS: changed source root invalidates stored inventory")
     drv.execute_script("trees[''][0][0]='HELP';draw()")
+    # An interrupted crawl leaves the viewer inside a nested folder.
+    # Rewinding uses the VERIFIED DFS parent listings, not an unchecked click.
+    drv.execute_script("window.currentPath='';draw()")
+    drv.execute_script("window.__crawler=new window.RarRescueCrawler(document,window.RarRescueDOM,{delay:()=>Promise.resolve()})")
+    assert call("begin")["ok"]
+    assert call("step")["path"]=="HELP"
+    assert call("step")["path"]=="HELP/SUB"
+    assert drv.execute_script("return window.currentPath")=="HELP/SUB"
+    rewound=drv.execute_async_script("""
+      const done=arguments[arguments.length-1];
+      window.__crawler.rewindToRoot('Диск 2.rar').then(done);
+    """)
+    assert rewound["ok"] and rewound["rootReached"],rewound
+    assert drv.execute_script("return window.currentPath")==""
+    print("PASS: interrupted live walker rewinds to root by verified parents")
+
+    # Identical parent/child rows are valid: the viewer's path transition
+    # confirms navigation even when filename snapshots do not change.
+    drv.execute_script("""
+      trees['']=[['TWIN','folder']];
+      trees['TWIN']=[['TWIN','folder']];
+      trees['TWIN/TWIN']=[['leaf.txt','file']];
+      window.currentPath='';draw();
+      window.__crawler=new window.RarRescueCrawler(document,window.RarRescueDOM,
+        {delay:()=>Promise.resolve()});
+    """)
+    assert call("begin")["ok"]
+    for _ in range(10):
+        result=call("step")
+        assert result["ok"],result
+        if result["event"]=="complete":break
+    else:raise AssertionError("Identical-listing nested traversal did not finish")
+    assert result["objects"]==3 and result["paths"]==3,result
+    assert drv.execute_script("return window.currentPath")==""
+    print("PASS: identical parent/child directory names navigate by viewer path changes")
+    drv.execute_script("""
+      trees['']=[
+        ['HELP','folder'],['JRE','folder'],['REPORT','folder'],['PLUGINS','folder'],
+        ['README.TXT','file'],['INDEX.HTM','file'],['CDVIEWER.EXE','file']
+      ];
+      window.currentPath='';draw();
+    """)
     # An absent back control must STOP rather than silently treating a
     # nested folder as if it were the root.
     drv.execute_script("window.currentPath='HELP/SUB';draw()")
