@@ -13,12 +13,16 @@ const SAFE_ROOT="Disk-2.rar";
 const VALID_STATES=new Set(["complete","interrupted","in_progress"]);
 const normPath=value=>String(value||"").replace(/\\/g,"/");
 const basename=value=>normPath(value).split("/").pop().slice(0,220);
-const ownReport=item=>/^Disk-2\.rar-download-log(?: \([0-9]+\))?\.json$/i.test(basename(item?.filename));
+const ownReport=(item,rootName=SAFE_ROOT)=>{
+  const actual=basename(item?.filename).normalize("NFC").toLowerCase()
+    .replace(/ \\([0-9]+\\)(?=\\.json$)/i,"");
+  return actual===(rootName+"-download-log.json").normalize("NFC").toLowerCase();
+};
 const sourcePath=(folder,name)=>(folder?folder+"/":"")+name;
 const iso=()=>new Date().toISOString();
-const empty=()=>({schema:SCHEMA,phase:"idle",batchId:null,tabId:null,
-  createdAt:null,startedAt:0,tailDeadline:0,requests:{},downloads:{},audit:[],
-  sourcePathsCount:1199,migratedFrom:null});
+const empty=(total=1199,scopeId=null)=>({schema:SCHEMA,phase:"idle",
+  scopeId,batchId:null,tabId:null,createdAt:null,startedAt:0,tailDeadline:0,
+  requests:{},downloads:{},audit:[],sourcePathsCount:total,migratedFrom:null});
 function isSafeToRetryLookup(record){
   return record?.state==="not-clicked" &&
     !Number(record.clickConfirmedAt||0) &&
@@ -32,11 +36,18 @@ function safeSource(value){
   return value;
 }
 class HarvestWorker {
-  constructor(api,utils){
-    this.api=api;this.utils=utils;this.state=empty();this.serial=Promise.resolve();this.lastPolled={};
-    this.ready=api.storage.local.get([KEY,OLD_KEY]).then(data=>{
-      const newer=data?.[KEY];
-      if(newer?.schema===SCHEMA){this.state=newer;return;}
+  constructor(api,utils,scope=null){
+    this.api=api;this.utils=utils;this.scope=scope;
+    this.safeRoot=scope?.outputRoot||SAFE_ROOT;
+    this.storageKey=scope?.harvestStorageKey||KEY;
+    this.state=empty(scope?0:1199,scope?.scopeId||null);
+    this.serial=Promise.resolve();this.lastPolled={};
+    this.ready=api.storage.local.get(scope?[this.storageKey]:[KEY,OLD_KEY]).then(data=>{
+      const newer=data?.[this.storageKey];
+      if(newer?.schema===SCHEMA&&(!scope||newer.scopeId===scope.scopeId)){
+        this.state=newer;return;
+      }
+      if(scope)return;
       const old=data?.[OLD_KEY];
       if(!old?.requests||!old?.downloads)return;
       const migrated=empty();
@@ -47,7 +58,7 @@ class HarvestWorker {
         if(!source||!source.name)continue;
         migrated.requests[path]={
           ...source,clickId:source.clickId||"legacy:"+path,
-          expectedFullPath:SAFE_ROOT+"/"+path,
+          expectedFullPath:this.safeRoot+"/"+path,
           dispatchAt:Number(source.clickedAt)||Number(source.createdAt)||0,
           clickedAt:Number(source.clickedAt)||0,
           clickConfirmedAt:Number(source.clickedAt)||0,
@@ -61,7 +72,7 @@ class HarvestWorker {
         if(!item)continue;
         migrated.downloads[id]={...item,
           downloadId:Number(item.id)||Number(id),
-          expectedFullPath:item.sourcePath?SAFE_ROOT+"/"+item.sourcePath:null,
+          expectedFullPath:item.sourcePath?this.safeRoot+"/"+item.sourcePath:null,
           actualSavedFullPath:item.actualSavedPath||null,
           serverReportedName:item.browserName||null,
           associationConfidence:item.matchConfidence||"legacy-unverified",
@@ -75,7 +86,7 @@ class HarvestWorker {
     const job=this.serial.then(async()=>{
       await this.ready;
       const result=await fn(this.state);
-      await this.api.storage.local.set({[KEY]:this.state});
+      await this.api.storage.local.set({[this.storageKey]:this.state});
       return result;
     });
     this.serial=job.catch(()=>{});
@@ -90,7 +101,7 @@ class HarvestWorker {
       (this.state.phase==="tail"&&now<this.state.tailDeadline);
   }
   sourceAllowed(item){
-    if(!this.recording()||!item||ownReport(item)||
+    if(!this.recording()||!item||ownReport(item,this.safeRoot)||
        !this.utils.isDownloadHost(item.url||item.finalUrl||""))return false;
     if(Number.isInteger(item.tabId)&&item.tabId>=0&&item.tabId!==this.state.tabId){
       let host="";
@@ -101,13 +112,17 @@ class HarvestWorker {
     return true;
   }
   async begin(tabId,total){
-    if(!Number.isInteger(tabId)||tabId<0||total!==1199)throw Error("Wrong RAR scope");
+    if(!Number.isInteger(tabId)||tabId<0||!Number.isInteger(total)||total<0||total>100000)
+      throw Error("Invalid archive member count");
     await this.ready;
     if(this.state.phase==="collecting"&&this.state.tabId!==tabId && this.api.tabs?.get){
       try{await this.api.tabs.get(this.state.tabId);throw Error("Another recovery tab is still active");}
       catch(e){if(e.message==="Another recovery tab is still active")throw e;}
     }
     return this.atomic(s=>{
+      if(this.scope&&s.scopeId!==this.scope.scopeId)throw Error("Different archive scope");
+      if(s.batchId&&s.sourcePathsCount!==total)throw Error("Archive map changed since capture began");
+      s.sourcePathsCount=total;
       if(!s.batchId){s.batchId="harvest-"+Date.now();s.createdAt=iso();}
       s.tabId=tabId;s.phase="collecting";s.startedAt=Date.now();s.tailDeadline=0;
       this.log("begin",null,"Capture resumed; 120s per source, no automatic retries");
@@ -125,7 +140,7 @@ class HarvestWorker {
     const path=safeSource(sourcePath(folder,name));
     if(!name||name.includes("/")||name.includes("\\"))throw Error("Bad basename");
     // Normalize Windows directory names through existing safe common helper.
-    const checked=this.utils.relative(folder,name);
+    const checked=this.utils.relative(folder,name,this.scope?.outputRoot||null);
     if(!checked.endsWith("/"+this.utils.component(name)))throw Error("Unsafe filename");
     return this.atomic(s=>{
       if(s.phase!=="collecting")throw Error("Capture not active");
@@ -151,7 +166,7 @@ class HarvestWorker {
           sourcePath:path,clickId:previous.clickId};
       }
       const id=s.batchId+":"+(Object.keys(s.requests).length+1);
-      s.requests[path]={sourcePath:path,expectedFullPath:SAFE_ROOT+"/"+path,
+      s.requests[path]={sourcePath:path,expectedFullPath:this.safeRoot+"/"+path,
         folder,name,clickId:id,armedAt:Date.now(),dispatchAt:0,clickedAt:0,
         clickConfirmedAt:0,deadlineAt:0,timedOutAt:0,state:"armed",downloadIds:[],
         observedNames:[],lastError:null};
@@ -221,7 +236,7 @@ class HarvestWorker {
   }
   async determine(item){
     return this.atomic(s=>{
-      if(ownReport(item)){
+      if(ownReport(item,this.safeRoot)){
         // The JSON report is also downloaded from a blob:disk.yandex.ru URL.
         // It is NOT an archive member, never count/relocate it.
         delete s.downloads[String(item.id)];
@@ -236,7 +251,7 @@ class HarvestWorker {
       // Archive root is the only fallback for genuinely unattributable data.
       // Never add a special subfolder or rename server-returned basenames.
       const parts=r?.folder?r.folder.split("/").map(this.utils.component):[];
-      const relative=[SAFE_ROOT,...parts,this.utils.component(actualName)].join("/");
+      const relative=[this.safeRoot,...parts,this.utils.component(actualName)].join("/");
       const event={...(old||{}),downloadId:item.id,
         createdAt:old?.createdAt||iso(),createdTimeMs:old?.createdTimeMs||Date.now(),
         sourcePath:r?.sourcePath||null,expectedFullPath:r?.expectedFullPath||null,
@@ -269,7 +284,7 @@ class HarvestWorker {
       // user-requested JSON report (never sent to a remote endpoint).
       row.actualSavedFullPath=String(item.filename||"")||row.actualSavedFullPath;
       const full=normPath(row.actualSavedFullPath);
-      const marker="/"+SAFE_ROOT+"/";
+      const marker="/"+this.safeRoot+"/";
       const idx=full.toLowerCase().lastIndexOf(marker.toLowerCase());
       row.actualSavedRelativePath=idx>=0?full.slice(idx+1):basename(full);
       row.actualBrowserName=basename(item.filename)||row.serverReportedName;
@@ -333,9 +348,9 @@ class HarvestWorker {
     const requests=Object.values(this.state.requests);
     // Exclude the v0.12 extension-generated JSON report from archive counts.
     const rows=Object.values(this.state.downloads).filter(row=>
-      !ownReport({filename:row.serverReportedName||row.browserName||row.actualBrowserName||""}));
+      !ownReport({filename:row.serverReportedName||row.browserName||row.actualBrowserName||""},this.safeRoot));
     return {ok:true,phase:this.state.phase,batchId:this.state.batchId,
-      total:1199,requested:requests.length,
+      total:this.state.sourcePathsCount,requested:requests.length,
       clickDispatchCount:requests.filter(r=>Number(r.dispatchAt)>0).length,
       clickDispatchAttempts:requests.reduce((sum,r)=>sum+
         (Number(r.dispatchAt)>0?1:0)+(r.noClickHistory?.length||0),0),
