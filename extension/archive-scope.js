@@ -14,6 +14,46 @@ function archiveName(value){
     throw Error("Archive filename cannot be represented losslessly on Windows");
   return name;
 }
+// The Yandex page title is often just "Яндекс Диск" even if the iframe
+// lists RAR files. Resolve a lossless filename if provided; otherwise use a
+// deterministic, Windows-safe folder name derived from the public share ID.
+function parseTitle(value){
+  if(typeof value!=="string"||!value)return null;
+  const raw=value.normalize("NFC").trim();
+  if(raw.length>1000)return null;
+  const options=[raw];
+  for(const segment of raw.split(/\s+[—–|·]\s+/u))options.push(segment);
+  const quoted=/[«“"']([^«»“”"']{1,160}\.rar)[»”"']/giu;
+  for(const match of raw.matchAll(quoted))options.push(match[1]);
+  const token=/(?:^|\s)([^<>:"\\/|?*\u0000-\u001f]{1,120}\.rar)(?=\s|$|[»”"'])/giu;
+  for(const match of raw.matchAll(token))options.push(match[1]);
+  for(const option of options){
+    const label=String(option||"").trim().replace(/^[«“"']+|[»”"']+$/gu,"").trim();
+    if(!label)continue;
+    try{return archiveName(label);}catch(_){}
+  }
+  return null;
+}
+function resolveName(rawUrl,candidates=[]){
+  const u=new URL(rawUrl);
+  if(u.protocol!=="https:"||u.hostname!=="disk.yandex.ru"||
+     u.username||u.password||u.port)
+    throw Error("Unsupported Yandex public link origin");
+  const id=/^\/d\/([A-Za-z0-9_-]{1,150})\/?$/.exec(u.pathname)?.[1];
+  if(!id)throw Error("Open a supported public /d/ archive link");
+  for(const row of candidates){
+    const entry=typeof row==="string"?{value:row,source:"page"}:row;
+    const valid=parseTitle(entry?.value);
+    if(valid)return Object.freeze({archiveName:valid,source:entry?.source||"page",
+      fallback:false,
+      viewerExpectedTitle:entry?.source==="viewer"?String(entry.value).trim():null});
+  }
+  const hash=Array.from(id).reduce((h,ch)=>Math.imul(h^ch.charCodeAt(0),16777619)>>>0,2166136261);
+  const fallback="Yandex-RAR-"+id.slice(0,90)+
+    (id.length>90?"-"+hash.toString(16).padStart(8,"0"):"")+".rar";
+  return Object.freeze({archiveName:archiveName(fallback),source:"public-link",
+    fallback:true,viewerExpectedTitle:null});
+}
 function fromYandexPublicLink(rawUrl,rawName){
   let url;
   try{url=new URL(rawUrl);}catch(_){throw Error("Invalid Yandex public link");}
@@ -43,6 +83,6 @@ function outputRootConflict(a,b){
     String(b.outputRoot||"").normalize("NFC").toLowerCase());
 }
 root.RarRescueArchiveScope=Object.freeze({
-  schema:SCHEMA,archiveName,fromYandexPublicLink,sameScope,outputRootConflict
+  schema:SCHEMA,archiveName,parseTitle,resolveName,fromYandexPublicLink,sameScope,outputRootConflict
 });
 })(globalThis);
