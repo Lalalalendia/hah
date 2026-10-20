@@ -88,6 +88,25 @@ async function claim(r,s,scope,id,name,folder){
     "Второй.rar/OTHER/same.txt");
   assert.equal((await reloaded.bind(first,a)).state.tabId,11);
   assert.equal((await reloaded.bind(second,b)).state.tabId,22);
+  // Browser restart reused tab ID 22 for an unrelated public link. Persisted
+  // click/download history must survive, but NEW downloads cannot be assigned
+  // to the previous archive merely because tabId is numerically equal.
+  api.tabs={async get(id){
+    if(id===22)return {id,url:"https://disk.yandex.ru/d/unrelated"};
+    throw Error("Tab was closed");
+  }};
+  const restarted=router();await restarted.ready;
+  const stale=await restarted.bind(second,b);
+  assert.equal(stale.invalidTab,true);
+  assert.equal(stale.state.phase,"tail");
+  assert(stale.state.downloads["201"],"Known download IDs are still remembered");
+  const recycled=make(254,22,"unrelated.txt");
+  assert.equal(await restarted.created(recycled),false);
+  assert.equal((await restarted.determine(recycled)).handled,false);
+  assert(!stale.state.downloads["254"],"New tab contents must not attach to stale scope");
+  // Explicit new start on a verified matching link reactivates the scope.
+  assert((await restarted.start(second,b,1)).ok);
+  assert.equal(stale.invalidTab,false);
   // Scope metadata, source URL and browser download IDs must match owner.
   await assert.rejects(()=>r.bind(first,b),/identity|match/i);
   console.log("PASS: two simultaneous archives, separate same-name paths, late event ownership, detached quarantine, restart");
