@@ -1,4 +1,4 @@
-/* RAR Rescue v0.13: one click per archive member, up to 120 seconds of
+/* RAR Rescue v0.14: one click per archive member, up to 120 seconds of
  * waiting, full-fidelity audit of separately identified browser downloads.
  * No signed URLs, cookies or file contents are stored or uploaded.
  */
@@ -19,6 +19,12 @@ const iso=()=>new Date().toISOString();
 const empty=()=>({schema:SCHEMA,phase:"idle",batchId:null,tabId:null,
   createdAt:null,startedAt:0,tailDeadline:0,requests:{},downloads:{},audit:[],
   sourcePathsCount:1199,migratedFrom:null});
+function isSafeToRetryLookup(record){
+  return record?.state==="not-clicked" &&
+    !Number(record.clickConfirmedAt||0) &&
+    !Number(record.clickedAt||0) &&
+    !record.downloadIds?.length;
+}
 function safeSource(value){
   if(typeof value!=="string"||!value||value.length>2500||value.startsWith("/")||
      value.split("/").some(part=>!part||part==="."||part===".."||part.length>200||
@@ -123,7 +129,27 @@ class HarvestWorker {
     if(!checked.endsWith("/"+this.utils.component(name)))throw Error("Unsafe filename");
     return this.atomic(s=>{
       if(s.phase!=="collecting")throw Error("Capture not active");
-      if(s.requests[path])return {ok:true,skipped:true,sourcePath:path,state:s.requests[path].state};
+      if(s.requests[path]){
+        const previous=s.requests[path];
+        if(!isSafeToRetryLookup(previous))
+          return {ok:true,skipped:true,sourcePath:path,state:previous.state};
+        // Only a row lookup failed; there was no viewer click/download.
+        previous.noClickHistory=[...(previous.noClickHistory||[]),{
+          clickId:previous.clickId,dispatchAt:previous.dispatchAt,
+          failedAt:previous.armedAt,reason:previous.lastError||"not visible",
+          state:"not-clicked"
+        }].slice(-30);
+        s.lookupRetrySeq=(Number(s.lookupRetrySeq)||0)+1;
+        previous.clickId=s.batchId+":lookup-retry-"+s.lookupRetrySeq;
+        previous.armedAt=Date.now();previous.dispatchAt=0;
+        previous.clickedAt=0;previous.clickConfirmedAt=0;
+        previous.deadlineAt=0;previous.timedOutAt=0;
+        previous.state="armed";previous.lastError=null;
+        previous.downloadIds=[];previous.observedNames=[];
+        this.log("lookup-rearmed",path,"No previous row click; safe to retry lookup");
+        return {ok:true,skipped:false,retryOfNoClick:true,
+          sourcePath:path,clickId:previous.clickId};
+      }
       const id=s.batchId+":"+(Object.keys(s.requests).length+1);
       s.requests[path]={sourcePath:path,expectedFullPath:SAFE_ROOT+"/"+path,
         folder,name,clickId:id,armedAt:Date.now(),dispatchAt:0,clickedAt:0,
@@ -304,10 +330,17 @@ class HarvestWorker {
   }
   async status(){await this.ready;await this.serial;return this.summary();}
   summary(){
-    const requests=Object.values(this.state.requests),rows=Object.values(this.state.downloads);
+    const requests=Object.values(this.state.requests);
+    // Exclude the v0.12 extension-generated JSON report from archive counts.
+    const rows=Object.values(this.state.downloads).filter(row=>
+      !ownReport({filename:row.serverReportedName||row.browserName||row.actualBrowserName||""}));
     return {ok:true,phase:this.state.phase,batchId:this.state.batchId,
       total:1199,requested:requests.length,
       clickDispatchCount:requests.filter(r=>Number(r.dispatchAt)>0).length,
+      clickDispatchAttempts:requests.reduce((sum,r)=>sum+
+        (Number(r.dispatchAt)>0?1:0)+(r.noClickHistory?.length||0),0),
+      notClickedCount:requests.filter(r=>r.state==="not-clicked").length,
+      safeToRetryLookupCount:requests.filter(isSafeToRetryLookup).length,
       clickCount:requests.filter(r=>Number(r.clickConfirmedAt)>0).length,
       downloadStartedCount:rows.length,
       downloadCompletedCount:rows.filter(r=>r.state==="complete").length,
