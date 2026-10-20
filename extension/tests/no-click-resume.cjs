@@ -24,7 +24,9 @@ for(let i=0;i<1199;i++){
     };
   }
 }
-downloads["3001"]={downloadId:3001,sourcePath:null,state:"complete",
+// ID must not overlap source downloads (2000...3190); otherwise the
+// fixture overwrites a genuine completion rather than adding a report.
+downloads["999999"]={downloadId:999999,sourcePath:null,state:"complete",
   serverReportedName:"Disk-2.rar-download-log.json",bytes:12345};
 const store={rr_harvest_v13:{
   schema:"rar-rescue-capture-v3",phase:"tail",tabId:10,batchId:"capture-test",
