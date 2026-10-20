@@ -487,18 +487,22 @@
       expectedObjects:null,
       createdAt:new Date().toISOString(),
       scanned:false,complete:false,observedObjects:0,
-      directories:{},files:{},unknown:[],issues:[]
+      directories:{},files:{},completedSubtrees:[],unknown:[],issues:[]
     };
   }
 
   function storeDirectory(event) {
     if(!tree || !event || event.event!=="directory")throw new Error("Invalid directory scan event");
     const path=String(event.path||"");
-    if(Object.prototype.hasOwnProperty.call(tree.directories,path)) {
-      tree.issues.push({path,reason:"duplicate-directory-visit"});
-      return;
-    }
     const items=event.items||[];
+    if(Object.prototype.hasOwnProperty.call(tree.directories,path)) {
+      const prior=tree.directories[path].entries||[];
+      const normalize=rows=>rows.map(x=>x.kind+"|"+x.name).sort().join("\n");
+      if(normalize(prior)!==normalize(items))
+        throw new Error("Checkpoint directory changed: "+path);
+      tree.observedObjects=Number(event.discoveredObjects)||tree.observedObjects;
+      return; // The same directory is revalidated, not double-counted.
+    }
     tree.directories[path]={
       path,entries:items.map(i=>({name:i.name,kind:i.kind})),
       empty:items.length===0,scannedAt:new Date().toISOString()
@@ -532,7 +536,13 @@
 
   function finalizeTree(event){
     tree.scanned=true;
-    tree.observedObjects=Number(event.objects)||tree.observedObjects;
+    const expectedObjects=Object.values(tree.directories)
+      .reduce((n,dir)=>n+(dir.entries||[]).length,0);
+    const expectedPaths=Object.keys(tree.directories).length;
+    if(Number(event.objects)!==expectedObjects||Number(event.paths)!==expectedPaths)
+      tree.issues.push({path:"",reason:"checkpoint-count-mismatch",
+        expectedObjects,expectedPaths,actualObjects:event.objects,actualPaths:event.paths});
+    tree.observedObjects=expectedObjects;
     const reserved=new Map();
     for(const [source,record] of Object.entries(tree.files)){
       const dest=record.destination.toLowerCase();
@@ -571,11 +581,35 @@
     if(!frame){notice="Открой корень архива и найди файлы.";show(notice);return;}
     if(!scope)throw Error("Archive scope is unknown");
     running=true;stopRequested=false;treePhase="inventory";treeFrame=frame.frameId;
-    tree=newTree();await saveTree();
-    notice="Строю дерево папок. Не переключай папки вручную во время обхода.";
+    const checkpointEligible=Boolean(tree&&tree.schema==="rar-rescue-tree-v2"&&
+      tree.scopeId===scope.scopeId&&!tree.complete&&!tree.scanned&&
+      Object.keys(tree.directories||{}).length>0&&
+      Array.isArray(tree.completedSubtrees)&&
+      !(tree.unknown||[]).length&&
+      !(tree.issues||[]).some(x=>x.reason!=="crawl-interrupted"));
+    if(!checkpointEligible)tree=newTree();
+    else tree.issues=[]; // Discard only transient failures; keep scanned data.
+    await saveTree();
+    notice=checkpointEligible?
+      "Продолжаю обход по сохранённой карте, проверяя содержимое уже открытых каталогов.":
+      "Строю дерево папок. Не переключай папки вручную во время обхода.";
     show(notice);
     try {
-      let item=await inFrame(frame.frameId,{kind:"RR_SENSOR_CRAWL_BEGIN",archiveName:scope.archiveName});
+      let checkpoint=checkpointEligible?{
+        directories:tree.directories,completedSubtrees:tree.completedSubtrees
+      }:null;
+      let item=await inFrame(frame.frameId,{
+        kind:"RR_SENSOR_CRAWL_BEGIN",archiveName:scope.archiveName,checkpoint
+      });
+      // If the archive's ROOT listing changed since the interrupted crawl,
+      // the old cache is invalid. Do a fresh scan instead of combining trees.
+      if(!item.ok&&String(item.error||"").startsWith("checkpoint-directory-changed:")){
+        tree=newTree();await saveTree();
+        checkpoint=null;
+        item=await inFrame(frame.frameId,{
+          kind:"RR_SENSOR_CRAWL_BEGIN",archiveName:scope.archiveName
+        });
+      }
       if(!item.ok)throw new Error(item.error||"Не удалось подтвердить корень архива");
       storeDirectory(item);await saveTree();
       for(let iteration=0;iteration<MAX_CRAWL_EVENTS && !stopRequested;iteration++){
@@ -597,15 +631,29 @@
             " · объектов: "+tree.observedObjects;
           render();
         }
+        if(item.event==="returned"){
+          const closed=String(item.completedPath||"");
+          if(!closed||!Object.prototype.hasOwnProperty.call(tree.directories,closed))
+            throw new Error("Crawler returned an unknown completed folder");
+          if(!tree.completedSubtrees.includes(closed)){
+            tree.completedSubtrees.push(closed);
+            await saveTree(); // Atomic subtree completion checkpoint.
+          }
+        }
+        if(item.event==="skipped"){
+          progress="Повторный обход: подтверждённая ранее ветка "+item.path+
+            " · пропущено повторное скачивание карты, не файлов";
+          render();
+        }
         if(iteration===MAX_CRAWL_EVENTS-1)throw new Error("Превышен лимит этапов обхода");
       }
-      notice="Обход прерван. Карта сохранена частично. Для нового запуска вернись в корень RAR.";
+      notice="Обход прерван. Карта сохранена; при следующем запуске завершённые ветки будут пропущены.";
       show(notice);
     } catch(error) {
       tree.issues.push({path:"",reason:"crawl-interrupted",detail:String(error.message||error).slice(0,200)});
       await saveTree();
       notice="Остановлено: "+error.message+
-        ". Частичная карта сохранена. Вернись в корень архива.";
+        ". Карта частично сохранена; для продолжения открой корень RAR.";
       show(notice);
     } finally {
       running=false;stopRequested=false;progress="";treePhase="";treeFrame=null;render();
