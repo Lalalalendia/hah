@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Yandex RAR Rescue",
-  "version": "0.14.0",
-  "description": "RAR Rescue: recover non-clicked files after viewer refresh; 120s per click, full path audit, no duplicate retries.",
+  "version": "0.15.0",
+  "description": "RAR Rescue: inventory any Yandex web-viewable RAR, sequential downloads and per-archive resume.",
   "permissions": [
     "downloads",
     "storage"
@@ -25,6 +25,7 @@
       ],
       "js": [
         "common.js",
+        "archive-scope.js",
         "manifest-model.js",
         "recovery-plan.js",
         "content.js"
