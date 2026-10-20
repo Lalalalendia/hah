@@ -3,12 +3,12 @@
  * Crucial invariant: NEVER rename an unexpected server filename to the
  * viewer's requested filename. Store the browser-reported basename and
  * separately log source-path attribution as evidence, not verified identity.
- * Unknown/late transfers go to a distinct, lossless _unattributed folder.
+ * All files go to ONE recovery folder with the browser-returned name.
  */
 (function(root){
 "use strict";
 const KEY="rr_harvest_v11";
-const MAX_AGE_MS=30*60*1000;
+const MAX_AGE_MS=60*60*1000;
 const ACTIVE_ASSOCIATION_MS=18000;
 const SCHEMA="yandex-archive-raw-harvest-v1";
 function basename(filename){
@@ -95,7 +95,7 @@ class RawHarvest {
       if(this.state.phase==="collecting"){
         this.state.phase="tail";
         this.state.tailDeadline=Date.now()+MAX_AGE_MS;
-        this.audit("stop","","Late Yandex responses collected for another 30 minutes");
+        this.audit("stop","","Late Yandex responses collected for another hour");
       }
       return this.summarize();
     });
@@ -184,11 +184,7 @@ class RawHarvest {
         return {handled:true,filename:existing.outputRelative,conflictAction:"uniquify"};
       }
       const matched=this.choose(item);
-      const folder=matched.request?.folder||"";
-      const basePrefix=matched.request ? "" :
-        "_unattributed/"+this.state.batchId;
-      const route=this.utils.relative(basePrefix ?
-        basePrefix : folder,safeName);
+      const route=this.utils.relative("",safeName);
       const record={
         ...(existing||{}),id:item.id,
         browserName:observed||"(browser did not report a name)",
@@ -250,7 +246,7 @@ class RawHarvest {
       return true;
     });
   }
-  async status(){await this.ready;return this.summarize();}
+  async status(){await this.ready;await this.lock;return this.summarize();}
   summarize(){
     const req=Object.values(this.state.requests);
     const got=Object.values(this.state.downloads);
@@ -263,7 +259,7 @@ class RawHarvest {
       bytes:got.filter(x=>x.state==="complete").reduce((n,x)=>n+(x.bytes||0),0),
       lastEvents:this.state.audit.slice(-8)};
   }
-  async report(){await this.ready;return {ok:true,schema:SCHEMA,
+  async report(){await this.ready;await this.lock;return {ok:true,schema:SCHEMA,
     ...this.state,summary:this.summarize(),exportedAt:new Date().toISOString(),
     disclaimer:"File source associations based on timing or filenames are hypotheses, not verified content identities."};}
 }
