@@ -35,6 +35,7 @@ jobs:
           node --check extension/archive-navigator.js
           node --check extension/harvest-worker.js
           node --check extension/tests/harvest-120s.cjs
+          node --check extension/tests/no-click-resume.cjs
           node --check extension/frame-sensor.js
           node --check extension/tests/dom-smoke.cjs
           node --check extension/tests/download-history.cjs
@@ -47,6 +48,7 @@ jobs:
           node extension/tests/dom-smoke.cjs
           node extension/tests/download-history.cjs
           node extension/tests/harvest-120s.cjs
+          node extension/tests/no-click-resume.cjs
           node extension/tests/import-manifest.cjs
           node extension/tests/recovery-plan.cjs
       - name: Chromium archive DOM integration fixture
@@ -58,6 +60,6 @@ jobs:
       - name: Upload ready-to-install extension directory
         uses: actions/upload-artifact@v4
         with:
-          name: rar-rescue-v13
+          name: rar-rescue-v14
           path: extension/
           retention-days: 7
