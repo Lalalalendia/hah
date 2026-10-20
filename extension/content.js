@@ -779,6 +779,9 @@
       tree.nestedPilot?.passed!==true)return;
     const frame=bestFrame();
     if(!frame || frame.frameId!==approved.frameId)return;
+    // Disable all start buttons BEFORE awaiting reconciliation. Otherwise
+    // double-clicks could start two simultaneous navigator/queue runs.
+    running=true;stopRequested=false;render();
     let plan;
     try{
       const review=await reconcileBeforeResume();
@@ -791,14 +794,14 @@
         (plan.blocked?.length?": "+plan.blocked.slice(0,3).join(", "):""));
     }catch(error){
       notice="Нельзя начинать восстановление: "+String(error.message||error);
-      show(notice);return;
+      running=false;show(notice);render();return;
     }
     if(plan.pending===0){
       notice="Новых безопасных запросов нет. Не восстановлены/не проверены: "+
         plan.held+". Сохрани JSON-отчёт и проверь эти пути.";
-      show(notice);return;
+      running=false;show(notice);render();return;
     }
-    running=true;stopRequested=false;treePhase="download";treeFrame=frame.frameId;
+    treePhase="download";treeFrame=frame.frameId;
     notice="Очередь: "+plan.pending+" файлов в "+plan.visitedDirectoryCount+
       " каталогах; готовых: "+plan.skipped+
       "; отложено для проверки: "+plan.blockedCount+
