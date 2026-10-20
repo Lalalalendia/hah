@@ -40,7 +40,17 @@
     // within the CURRENT verified directory, not by clicking a random row.
     const row = dom.rowNamed(document,name) ||
       (message.allowLocate === true ? await crawler.locate(name,"file") : null);
-    if (!row) return {ok:false,error:"file-row-not-visible",name};
+    if (!row) {
+      const visible=current(),scroller=dom.scrollerOf(visible[0],document);
+      return {ok:false,error:"file-row-not-visible",name,
+        visibleCount:visible.length,
+        firstVisible:visible[0]?.getAttribute("title")||null,
+        lastVisible:visible.at(-1)?.getAttribute("title")||null,
+        scrollable:!!scroller,scrollTop:scroller?.scrollTop??null,
+        scrollHeight:scroller?.scrollHeight??null,
+        viewportHeight:scroller?.clientHeight??null,
+        verifiedDirectory:pathNavigator.currentPath};
+    }
     try { row.scrollIntoView({block:"nearest",inline:"nearest"}); } catch (_) {}
     // React may create the action buttons only while the row is hovered.
     // JavaScript hover events do not change CSS :hover, but they may trigger
