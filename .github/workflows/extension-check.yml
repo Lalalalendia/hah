@@ -26,6 +26,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Static JavaScript validation
         run: |
+          node --check extension/archive-scope.js
+          node --check extension/tests/archive-scope.cjs
           node --check extension/common.js
           node --check extension/content.js
           node --check extension/archive-dom.js
@@ -45,6 +47,7 @@ jobs:
           node --check extension/tests/smoke.cjs
       - name: Security and manifest smoke tests
         run: |
+          node extension/tests/archive-scope.cjs
           node extension/tests/smoke.cjs
           node extension/tests/dom-smoke.cjs
           node extension/tests/download-history.cjs
