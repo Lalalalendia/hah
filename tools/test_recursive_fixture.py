@@ -161,7 +161,7 @@ try:
     # A changed NESTED listing must be rejected, even though root listing is
     # unchanged. Keep enough path context to return to root for a fresh scan.
     drv.execute_script("""
-      window.currentPath='';trees['HELP'].append(['ADDED.TXT','file']);draw();
+      window.currentPath='';trees['HELP'].push(['ADDED.TXT','file']);draw();
       window.__crawler=new window.RarRescueCrawler(document,window.RarRescueDOM,
         {delay:()=>Promise.resolve()});
     """)
