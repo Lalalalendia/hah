@@ -13,3 +13,11 @@
 **Ограничения:** тесты синтаксиса и модельные сценарии v0.13 должны пройти CI, а реальное скачивание всех 1199 объектов ещё требует приёмки. При очень позднем ответе может быть неизвестна исходная папка; её не угадываем как факт. Chrome Downloads не создаёт пустые каталоги без файла — они остаются перечисленными в манифесте для дальнейшего восстановления. Не запускать EXE/CMD/SH.
 
 **Спецификация:** [RAR-RESCUE-SPEC-01](https://app.notion.com/p/3ff32a84beec81ef9ad5c831b63e66f8).
+
+## v0.14 — Viewer row lookup recovery
+
+A user-supplied complete v0.13 audit recorded 1199 source entries, 706 confirmed row clicks, 493 `not-clicked` failures (`file-row-not-visible`), 2 120-second timeouts and 20 returned-name mismatches. 492 of 493 visibility failures were inside `IHE_PDI/IMAGES`; one was `1000005A/1000018E/10000239/10000245`. Of the 699 browser completions, one was a migrated extension JSON report, leaving 698 archive file completions.
+
+v0.14 preserves durable `rr_harvest_v13` state and never re-clicks confirmed/timed-out/uncertain files. `not-clicked` entries that have no browser download IDs and no click confirmation can be retried safely. A missing virtualized file row triggers one directory re-entry without a file click; persistent missing rows stop the queue rather than issuing hundreds of fictitious download dispatches. Diagnostics capture visible rows and scroller state. Migration-era extension JSON is excluded from counters.
+
+Validation: the actual 1199-entry diagnostic passed Node.js worker-resume tests; real Yandex viewer re-entry behavior still requires live acceptance.
