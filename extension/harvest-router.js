@@ -16,16 +16,7 @@ class HarvestRouter {
     this.ready=this.restore();
   }
   canonical(raw){
-    if(!raw || typeof raw.archiveName!=="string" ||
-       typeof raw.sourceKey!=="string" ||
-       !/^yandex-public:\/d\/[A-Za-z0-9_-]{1,150}$/.test(raw.sourceKey))
-      return null;
-    try{
-      const url="https://disk.yandex.ru"+
-        raw.sourceKey.slice("yandex-public:".length);
-      const scope=this.scopeApi.fromYandexPublicLink(url,raw.archiveName);
-      return scope.scopeId===raw.scopeId?scope:null;
-    }catch(_){return null;}
+    return this.scopeApi.restoreScope(raw);
   }
   async restore(){
     // Separate gets also work with minimal extension/CI storage mocks.
@@ -44,9 +35,7 @@ class HarvestRouter {
         let valid=false;
         try{
           const tab=await this.api.tabs.get(worker.state.tabId);
-          const url=new URL(String(tab?.url||""));
-          valid=url.protocol==="https:"&&url.hostname==="disk.yandex.ru"&&
-            "yandex-public:"+url.pathname.replace(/\/$/,"")===scope.sourceKey;
+          valid=this.scopeApi.matchesTab(scope,String(tab?.url||""));
         }catch(_){}
         if(!valid){
           worker.invalidTab=true;
@@ -62,8 +51,7 @@ class HarvestRouter {
     const scope=this.canonical(raw);
     if(!scope)throw Error("Invalid archive identity");
     const url=String(sender?.tab?.url||"");
-    const actual=this.scopeApi.fromYandexPublicLink(url,scope.archiveName);
-    if(actual.scopeId!==scope.scopeId)
+    if(!this.scopeApi.matchesTab(scope,url))
       throw Error("Archive identity does not match the current tab");
     let worker=this.workers.get(scope.scopeId);
     if(worker)return worker;
@@ -77,19 +65,16 @@ class HarvestRouter {
     return worker;
   }
   forSender(sender){
-    const url=new URL(String(sender?.tab?.url||""));
-    if(url.protocol!=="https:"||url.hostname!=="disk.yandex.ru")
-      throw Error("Not a Yandex public archive tab");
-    const sourceKey="yandex-public:"+url.pathname.replace(/\/$/,"");
+    const url=String(sender?.tab?.url||"");
     const candidates=[...this.workers.values()].filter(w=>
-      w.scope.sourceKey===sourceKey);
-    if(candidates.length>1)throw Error("Ambiguous archive names at this public link");
+      this.scopeApi.matchesTab(w.scope,url));
+    if(candidates.length>1)
+      throw Error("Several archived viewer sessions share this tab; provide the active scope");
     if(candidates.length===1)return candidates[0];
-    // Keep the pre-v15 fixture and old strict UI accessible on the original
-    // link, without ever reusing its global capture for arbitrary archives.
-    if(this.workers.size===0&&sourceKey==="yandex-public:/d/_RSlWomRWmty1w")
+    if(this.workers.size===0&&
+       url.startsWith("https://disk.yandex.ru/d/_RSlWomRWmty1w"))
       return this.legacy;
-    throw Error("Start this archive with its own verified scope");
+    throw Error("Start this archive with its own verified viewer scope");
   }
   async start(sender,raw,total){
     const worker=await this.bind(sender,raw);
