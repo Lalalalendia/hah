@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Yandex RAR Rescue",
-  "version": "0.15.1",
+  "version": "0.15.2",
   "description": "RAR Rescue: inventory any Yandex web-viewable RAR, sequential downloads and per-archive resume.",
   "permissions": [
     "downloads",
