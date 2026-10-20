@@ -57,6 +57,15 @@ class HarvestWorker {
     this.ready=api.storage.local.get(scope?[this.storageKey]:[KEY,OLD_KEY]).then(data=>{
       const newer=data?.[this.storageKey];
       if(newer?.schema===SCHEMA&&(!scope||newer.scopeId===scope.scopeId)){
+        // v0.13 stored only a global Disk-2 capture and did not always
+        // serialize the total. Preserve its established 1199-member
+        // inventory without applying that number to any new archive.
+        if(!scope&&!Number.isInteger(newer.sourcePathsCount)){
+          newer.sourcePathsCount=1199;
+          newer.migratedFrom=newer.migratedFrom||"rr_harvest_v13-unscoped";
+        }
+        if(scope&&!Number.isInteger(newer.sourcePathsCount))
+          throw Error("Scoped capture has no recorded inventory count");
         this.state=newer;return;
       }
       if(scope)return;
