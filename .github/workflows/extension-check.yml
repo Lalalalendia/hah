@@ -33,6 +33,7 @@ jobs:
           node --check extension/tests/recovery-plan.cjs
           node --check extension/archive-crawler.js
           node --check extension/archive-navigator.js
+          node --check extension/harvest-worker.js
           node --check extension/frame-sensor.js
           node --check extension/tests/dom-smoke.cjs
           node --check extension/tests/download-history.cjs
@@ -55,6 +56,6 @@ jobs:
       - name: Upload ready-to-install extension directory
         uses: actions/upload-artifact@v4
         with:
-          name: rar-rescue-v10
+          name: rar-rescue-v11
           path: extension/
           retention-days: 7
