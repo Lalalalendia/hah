@@ -85,6 +85,8 @@
     if (el("rr-check")) el("rr-check").disabled = running || !best;
     if (el("rr-stop")) el("rr-stop").disabled = !running;
     if (el("rr-inventory")) el("rr-inventory").disabled = running || !bestFrame();
+    if (el("rr-resume")) el("rr-resume").disabled = running || !best ||
+      !tree?.complete || !tree?.nestedPilot?.passed || Boolean(approved);
     if (el("rr-nested")) el("rr-nested").disabled = running || !bestFrame() ||
       !approved || !tree?.complete || approved.frameId !== bestFrame().frameId ||
       tree?.nestedPilot?.passed===true;
@@ -120,6 +122,7 @@
       '<label>Путь только для ручных проверок (при автоматической загрузке определяется из карты)<input id="rr-folder" type="text" placeholder="для корня оставить пустым" autocomplete="off"></label>',
       '<div class="rr-actions"><button id="rr-inventory">4. Обойти все папки</button><button id="rr-stop">Остановить</button></div>',
       '<div class="rr-actions"><button id="rr-nested">5. Проверить 2 вложенных файла</button></div>',
+      '<div class="rr-actions"><button id="rr-resume">Восстановить подтверждение без повторного скачивания</button></div>',
       '<p id="rr-nested-plan"></p>',
       '<div class="rr-actions"><button id="rr-recover">6. Скачать всё со структурой</button><button id="rr-report">Отчёт JSON</button></div>',
       '<div class="rr-actions"><button id="rr-import">Импортировать карту JSON</button><input id="rr-import-input" type="file" accept=".json,application/json" style="display:none"></div>',
@@ -138,6 +141,7 @@
     el("rr-native").addEventListener("click",()=>{void nativePilot();});
     el("rr-inventory").addEventListener("click",()=>{void inventoryTree();});
     el("rr-nested").addEventListener("click",()=>{void acceptNestedPaths();});
+    el("rr-resume").addEventListener("click",()=>{void restoreApproval();});
     el("rr-recover").addEventListener("click",()=>{void recoverTree();});
     el("rr-report").addEventListener("click",()=>{exportReport();});
     el("rr-import").addEventListener("click",()=>el("rr-import-input").click());
@@ -581,6 +585,47 @@
     const nav=await inFrame(frameId,{kind:"RR_SENSOR_NAV_GOTO",path});
     if(!nav.ok)throw new Error(nav.error||"Неизвестная ошибка перехода");
     return nav;
+  }
+
+  async function restoreApproval(){
+    if(running || approved || !tree?.complete || !tree.nestedPilot?.passed)return;
+    const frame=bestFrame();
+    if(!frame){notice="Открой корень архива и нажми «Найти файлы».";show(notice);return;}
+    running=true;render();
+    try{
+      const files=tree.nestedPilot.files;
+      if(!Array.isArray(files) || files.length!==2 ||
+         tree.nestedPilot.status!=="passed")
+        throw new Error("Нет двух завершённых доказательств вложенных путей");
+      const ledger=await countDownloads();
+      const folders=new Set();
+      for(const path of files){
+        const entry=tree.files?.[path],record=ledger["Disk-2.rar/"+path];
+        if(!entry || !entry.folder || !record ||
+           record.state!=="downloaded" || Number(record.bytes)<=0 ||
+           record.target!==entry.destination)
+          throw new Error("Не подтверждена загрузка исходного файла: "+path);
+        folders.add(entry.folder);
+      }
+      if(folders.size!==2)throw new Error("Контрольные файлы должны быть из разных каталогов");
+      await beginKnownPathNavigation(frame.frameId);
+      const target=await choosePilot(frame);
+      if(!target)throw new Error("Не обнаружен контрольный файл в корне");
+      const inspected=await inFrame(frame.frameId,{
+        kind:"RR_SENSOR_TRIGGER",name:target.name,pilot:true,inspectOnly:true
+      });
+      if(!inspected.ok || inspected.clicked || inspected.mode!=="label" ||
+         inspected.slots!==2)
+        throw new Error("Кнопка скачивания Яндекса изменилась; нужно новое подтверждение");
+      approved={frameId:frame.frameId,mode:inspected.mode,slots:inspected.slots,
+        checkedFile:"verified prior nested files",host:frame.host};
+      notice="Восстановлено подтверждение двух ранее загруженных вложенных файлов. "+
+        "Манифест и кнопка Яндекса проверены без нового скачивания.";
+      show(notice);
+    }catch(error){
+      notice="Невозможно безопасно восстановить допуск: "+String(error.message||error);
+      show(notice);
+    }finally{running=false;render();}
   }
 
   async function acceptNestedPaths(){
