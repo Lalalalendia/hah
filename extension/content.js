@@ -79,7 +79,7 @@
         " · тайм-аутов (120 с): "+h.timedOutCount+
         " · расхождений: "+h.mismatchCount+
         " · без привязки: "+h.unmatchedDownloadCount+
-        " · позиций учтено: "+h.requested+"/"+h.total) :
+        " · не нажато: "+h.notClickedCount+" · можно повторить: "+h.safeToRetryLookupCount+" · позиций учтено: "+h.requested+"/"+h.total) :
         "Один клик на файл; ожидание до 120 секунд. Сохраняются исходные каталоги и реальные имена Яндекса.";
     }
     if (el("rr-status")) el("rr-status").textContent = scanning ?
@@ -148,7 +148,7 @@
     panel=document.createElement("section");
     panel.id="rr-recovery-panel";
     panel.innerHTML=[
-      '<header><strong>RAR Rescue v0.13</strong><button id="rr-close" title="Закрыть">×</button></header>',
+      '<header><strong>RAR Rescue v0.14</strong><button id="rr-close" title="Закрыть">×</button></header>',
       '<p>Диск 2.rar · автоматическая выгрузка всех доступных файлов.</p>',
       '<div class="rr-actions"><button id="rr-harvest">Скачать всё</button></div>',
       '<p id="rr-harvest-count"></p>',
@@ -821,7 +821,13 @@
         // actually returned the requested file. In raw capture mode visit
         // all 1199 original rows once, including those from earlier versions.
         // Resume by ONLY skipping requests already recorded in this mode.
-        if(already[file.sourcePath]){
+        const previousAttempt=already[file.sourcePath];
+        // Only known row-lookup failures were NEVER clicked and may be retried.
+        const lookupOnlyFailure=previousAttempt?.state==="not-clicked" &&
+          !Number(previousAttempt.clickConfirmedAt||0) &&
+          !Number(previousAttempt.clickedAt||0) &&
+          !previousAttempt.downloadIds?.length;
+        if(previousAttempt && !lookupOnlyFailure){
           skipped++;
           continue;
         }
@@ -858,6 +864,24 @@
               approvedMode:"label",approvedSlots:2,inspectOnly:true
             });
           }catch(error){preflight={ok:false,error:String(error.message||error)};}
+          if(!preflight?.ok||!preflight.inspected){
+            // Refresh just this known directory; no file clicks are made.
+            show("Строка не найдена: "+file.sourcePath+
+              ". Повторно открываю каталог (без нажатия на файл).");
+            await goToKnownDirectory(frame.frameId,"");
+            await goToKnownDirectory(frame.frameId,dir);
+            try{
+              preflight=await inFrame(frame.frameId,{
+                kind:"RR_SENSOR_TRIGGER",name:file.name,pilot:false,
+                allowLocate:true,verifyNavigation:true,expectedFolder:dir,
+                approvedMode:"label",approvedSlots:2,inspectOnly:true
+              });
+            }catch(error){preflight={ok:false,error:String(error.message||error)};}
+          }
+          if(!preflight?.ok||!preflight.inspected)
+            throw new Error("Viewer cannot locate "+file.sourcePath+
+              " ("+String(preflight?.error||"row missing")+
+              "). No click was sent. Reload Yandex viewer, then resume.");
           const arm=await send({kind:"RR_HARVEST_ARM",folder:file.folder,filename:file.name});
           if(arm.skipped){skipped++;continue;}
           const dispatched=await send({kind:"RR_HARVEST_DISPATCH",folder:file.folder,filename:file.name});
