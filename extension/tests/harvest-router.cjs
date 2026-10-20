@@ -75,6 +75,11 @@ async function claim(r,s,scope,id,name,folder){
   // archive becomes active, even if the browser reports a later completion.
   await r.removedTab(11);
   assert.equal(ar.worker.state.phase,"tail");
+  // A tab may be reused for a new archive after navigation. Never begin a
+  // second capture there while old unresolved downloads can still arrive.
+  const newer=scopes.fromYandexPublicLink("https://disk.yandex.ru/d/c3","Третий.rar");
+  await assert.rejects(()=>r.start(sender(11,"https://disk.yandex.ru/d/c3"),newer,1),
+    /pending downloads.*separate tab/i);
   const finished={...ar.item,state:"complete",bytesReceived:100,totalBytes:100,
     filename:"C:\\Downloads\\Сборник.rar\\FIRST\\same.txt"};
   downloads.set(101,finished);
