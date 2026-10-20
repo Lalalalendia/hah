@@ -279,6 +279,13 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       respond(await rawHarvest.arm(String(message.folder||""),String(message.filename||"")));
       return;
     }
+    if(message.kind==="RR_HARVEST_LOOKUP_FAILED") {
+      if(sender.frameId!==0)throw Error("Only main frame can record a failed row lookup");
+      verifyHarvestOwner(sender);
+      respond(await rawHarvest.lookupFailed(String(message.folder||""),
+        String(message.filename||""),String(message.reason||"")));
+      return;
+    }
     if(message.kind==="RR_HARVEST_DISPATCH") {
       if(sender.frameId!==0)throw new Error("Only parent frame can dispatch a click");
       verifyHarvestOwner(sender);
