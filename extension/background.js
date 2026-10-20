@@ -34,7 +34,8 @@ async function bindHarvestScope(sender,raw){
     throw Error("Archive metadata is not tied to the current public URL");
   if(!rawHarvest.scope||!RarRescueArchiveScope.sameScope(rawHarvest.scope,candidate)){
     const previous=await rawHarvest.status();
-    if(rawHarvest.recording()&&previous.unresolvedCount>0)
+    if(rawHarvest.state.phase==="collecting"||
+       (rawHarvest.recording()&&previous.unresolvedCount>0))
       throw Error("Another archive has unresolved late browser downloads; do not mix captures");
     rawHarvest=new globalThis.RarRescueHarvestWorker(chrome,RarRescueUtils,candidate);
     await rawHarvest.ready;
