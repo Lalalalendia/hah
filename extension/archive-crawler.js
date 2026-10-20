@@ -11,7 +11,7 @@
       this.dom=dom;
       this.delay=config.delay || (ms=>new Promise(resolve=>setTimeout(resolve,ms)));
       this.maxDepth=32;
-      this.maxObjects=3500;
+      this.maxObjects=100000;
       this.maxScrollSteps=400;
       this.frames=[];
       this.halted=false;
@@ -95,18 +95,24 @@
         discoveredObjects:this.objectCount};
     }
 
-    async begin() {
+    async begin(expectedArchiveName=null) {
       this.frames=[];this.halted=false;this.seenPaths.clear();this.objectCount=0;
+      // Verify viewer identity, never infer the root from expected member names.
+      const header=this.doc.querySelector('[class*="archiveHeader_"]');
+      if(expectedArchiveName){
+        const label=header?.querySelector("strong")?.textContent?.trim();
+        if(!header || (label && label.normalize("NFC")!==expectedArchiveName.normalize("NFC")))
+          return {ok:false,error:"archive-viewer-identity-not-confirmed"};
+      }
+      // Some viewer versions expose a navigational path; when present, it is
+      // evidence that the user is inside a folder rather than at the root.
+      const pathHint=header?.getAttribute("data-archive-path");
+      if(pathHint && pathHint!=="/" && pathHint!==".")
+        return {ok:false,error:"not-at-archive-root"};
       const collection=await this.enumerate();
       if(!collection.ok || !collection.complete)
         return {ok:false,error:collection.error || "cannot-read-full-root-list"};
-      const roots=new Set(collection.items.map(x=>x.name));
-      // This extension targets the known public Disk 2.rar, not arbitrary
-      // archives; starting in a subfolder silently corrupts relative paths.
-      const markers=["README.TXT","INDEX.HTM","CDVIEWER.EXE","HELP","JRE"];
-      if(markers.filter(x=>roots.has(x)).length<2)
-        return {ok:false,error:"not-at-known-rar-root",names:collection.items.slice(0,5).map(x=>x.name)};
-      try {return this.push("",collection);}
+      try{return this.push("",collection);}
       catch(error){this.halted=true;return {ok:false,error:error.message};}
     }
 
