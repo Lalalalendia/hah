@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Yandex RAR Rescue",
-  "version": "0.8.0",
-  "description": "Verified Yandex RAR archive manifest with a two-file nested path acceptance gate before bulk recovery.",
+  "version": "0.9.0",
+  "description": "Manifest-directed Yandex RAR navigation: open only needed directories, preserve exact paths and download identity.",
   "permissions": [
     "downloads",
     "storage"
@@ -44,6 +44,7 @@
       "js": [
         "archive-dom.js",
         "archive-crawler.js",
+        "archive-navigator.js",
         "frame-sensor.js"
       ],
       "run_at": "document_idle",
