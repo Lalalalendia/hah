@@ -17,6 +17,7 @@
   let nativeVerified = false;
   let lastAutoCommand = null;
   let ledgerSnapshot = {};
+  let lastResumeReview = null;
   let nestedPilotPlan = null;
   let tree = null;
   let treePhase = "";
@@ -73,6 +74,21 @@
     if (el("rr-progress")) el("rr-progress").textContent = (progress ? progress+" · " : "") +
       notice+" · успешно: "+downloaded+", ошибки: "+failed;
     if (el("rr-log")) el("rr-log").textContent = events.slice(0,9).join("\n") || "Ожидаю проверки.";
+    if (el("rr-resume-status")){
+      const p=tree?.complete ? RarRescuePlan.pendingDirectories(tree,ledgerSnapshot) : null;
+      el("rr-resume-status").textContent = p?.ok ?
+        ("По журналу: "+p.skipped+" готово, "+p.pending+
+          " можно запрашивать, "+p.blockedCount+
+          " требуют проверки, "+p.collisionBlockedCount+
+          " с конфликтующими именами отложены. Ожидают решения: "+p.held+".") :
+        (p?.error||"Манифест не готов");
+      if(lastResumeReview?.active){
+        el("rr-resume-status").textContent += " Есть незавершённая загрузка: "+
+          (lastResumeReview.active.path||"другая вкладка")+
+          ", состояние "+lastResumeReview.active.state+".";
+      }
+    }
+    if(el("rr-review"))el("rr-review").disabled=running||!tree?.complete;
     if (el("rr-tree")) el("rr-tree").textContent = !tree ? "Манифест дерева ещё не построен." :
       ("Карта: " + Object.keys(tree.directories || {}).length + " каталогов, " +
        Object.keys(tree.files || {}).length + " файлов; объектов просмотрено: " +
@@ -113,7 +129,7 @@
     panel=document.createElement("section");
     panel.id="rr-recovery-panel";
     panel.innerHTML = [
-      '<header><strong>RAR Rescue v0.9</strong><button id="rr-close" title="Закрыть">×</button></header>',
+      '<header><strong>RAR Rescue v0.10</strong><button id="rr-close" title="Закрыть">×</button></header>',
       '<p>Диск 2.rar — 1286 объектов, включая папки. Полное восстановление сохраняет пути и ведёт журнал.</p>',
       '<div class="rr-actions"><button id="rr-scan">1. Найти файлы</button><button id="rr-check">2. Учесть скачанный README</button></div>',
       '<div class="rr-actions"><button id="rr-native">3. Нативный тест README</button></div>',
@@ -124,7 +140,9 @@
       '<div class="rr-actions"><button id="rr-nested">5. Проверить 2 вложенных файла</button></div>',
       '<div class="rr-actions"><button id="rr-resume">Восстановить подтверждение без повторного скачивания</button></div>',
       '<p id="rr-nested-plan"></p>',
-      '<div class="rr-actions"><button id="rr-recover">6. Скачать всё со структурой</button><button id="rr-report">Отчёт JSON</button></div>',
+      '<div class="rr-actions"><button id="rr-review">Проверить спорные загрузки</button></div>',
+      '<p id="rr-resume-status"></p>',
+      '<div class="rr-actions"><button id="rr-recover">6. Продолжить восстановление</button><button id="rr-report">Отчёт JSON</button></div>',
       '<div class="rr-actions"><button id="rr-import">Импортировать карту JSON</button><input id="rr-import-input" type="file" accept=".json,application/json" style="display:none"></div>',
       '<div class="rr-actions"><button id="rr-empty">Создать пустые каталоги</button></div>',
       '<p id="rr-tree"></p>',
@@ -142,6 +160,7 @@
     el("rr-inventory").addEventListener("click",()=>{void inventoryTree();});
     el("rr-nested").addEventListener("click",()=>{void acceptNestedPaths();});
     el("rr-resume").addEventListener("click",()=>{void restoreApproval();});
+    el("rr-review").addEventListener("click",()=>{void reviewPending();});
     el("rr-recover").addEventListener("click",()=>{void recoverTree();});
     el("rr-report").addEventListener("click",()=>{exportReport();});
     el("rr-import").addEventListener("click",()=>el("rr-import-input").click());
@@ -711,6 +730,50 @@
     }
   }
 
+  async function reviewPending(){
+    if(running||!tree?.complete)return;
+    running=true;render();
+    try{
+      await reconcileBeforeResume();
+      const p=RarRescuePlan.pendingDirectories(tree,ledgerSnapshot);
+      if(!p.ok)throw new Error(p.error);
+      notice="Проверка завершена: "+p.skipped+" подтверждено, "+
+        p.pending+" доступно для очереди, "+p.blockedCount+
+        " спорных и "+p.collisionBlockedCount+" связанных по имени отложены."+
+        (lastResumeReview?.active ?
+          " Есть незавершённый запрос — дождись его перед продолжением.":"");
+      show(notice);
+    }catch(error){notice="Проверка приостановлена: "+String(error.message||error);show(notice);}
+    finally{running=false;render();}
+  }
+
+  async function reconcileBeforeResume(){
+    // This call never clicks a file or deletes existing downloads. When
+    // a request older than eight minutes is unconfirmed, background may
+    // defer its watcher while preserving the needs-review ledger entry.
+    const result=await send({kind:"RR_PREPARE_RESUME"});
+    lastResumeReview=result;
+    const ledger=await countDownloads();
+    let changed=false;
+    for(const [path,file] of Object.entries(tree.files||{})){
+      const entry=ledger["Disk-2.rar/"+path];
+      if(entry?.state==="downloaded" &&
+         (file.status!=="downloaded" || Number(file.bytes)!==Number(entry.bytes))){
+        file.status="downloaded";
+        file.bytes=Number(entry.bytes)||0;
+        file.error="";
+        changed=true;
+      } else if(entry && ["armed","awaiting","needs-review","failed"].includes(entry.state) &&
+        file.status!=="needs-review"){
+        file.status="needs-review";
+        file.error=String(entry.reason||entry.state).slice(0,160);
+        changed=true;
+      }
+    }
+    if(changed)await saveTree();
+    return result;
+  }
+
   async function recoverTree(){
     if(running || !approved || !tree || !tree.scanned || !tree.complete ||
       tree.nestedPilot?.passed!==true)return;
@@ -718,6 +781,10 @@
     if(!frame || frame.frameId!==approved.frameId)return;
     let plan;
     try{
+      const review=await reconcileBeforeResume();
+      if(review.active)throw new Error("Старая загрузка ещё ожидается: "+
+        (review.active.path||review.active.state)+
+        ". Подожди её завершения или проверь историю браузера.");
       const ledger=await countDownloads();
       plan=RarRescuePlan.pendingDirectories(tree,ledger);
       if(!plan.ok)throw new Error(plan.error+
@@ -727,13 +794,16 @@
       show(notice);return;
     }
     if(plan.pending===0){
-      notice="По журналу новых файлов не осталось. Сохрани итоговый отчёт.";
+      notice="Новых безопасных запросов нет. Не восстановлены/не проверены: "+
+        plan.held+". Сохрани JSON-отчёт и проверь эти пути.";
       show(notice);return;
     }
     running=true;stopRequested=false;treePhase="download";treeFrame=frame.frameId;
-    notice="Ожидают "+plan.pending+" файлов в "+plan.visitedDirectoryCount+
-      " каталогах; пропущено уже готовых: "+plan.skipped+
-      ". Остальные каталоги посещать не буду.";
+    notice="Очередь: "+plan.pending+" файлов в "+plan.visitedDirectoryCount+
+      " каталогах; готовых: "+plan.skipped+
+      "; отложено для проверки: "+plan.blockedCount+
+      "; конфликты имён: "+plan.collisionBlockedCount+
+      ". Эти файлы не будут повторно запрошены.";
     show(notice);
     try{
       await beginKnownPathNavigation(frame.frameId);
@@ -891,6 +961,18 @@
       lastAutoCommand,
       lastInspection,
       nestedPilot:tree?.nestedPilot||null,
+      resumeReview:lastResumeReview ? {
+        reconciled:lastResumeReview.reconciled,deferred:lastResumeReview.deferred,
+        active:lastResumeReview.active,unresolvedCount:lastResumeReview.unresolvedCount,
+        unresolved:lastResumeReview.unresolved
+      }:null,
+      resumePlan:tree?.complete ? (()=>{
+        const p=RarRescuePlan.pendingDirectories(tree,ledgerSnapshot);
+        return p.ok ? {pending:p.pending,downloaded:p.skipped,
+          needsReview:p.blockedCount,nameConflicts:p.collisionBlockedCount,
+          unresolved:p.blocked.slice(0,12),collisionPaths:p.collisionBlocked.slice(0,12)} :
+          {error:p.error};
+      })() : null,
       treeSummary: tree ? {scanned:tree.scanned,complete:tree.complete,objects:tree.observedObjects,
         directories:Object.keys(tree.directories||{}).length,files:Object.keys(tree.files||{}).length,
         issues:(tree.issues||[]).slice(0,10),unknown:(tree.unknown||[]).slice(0,10)} : null,
