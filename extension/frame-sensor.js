@@ -119,7 +119,7 @@
       return false;
     }
     if (message.kind === "RR_SENSOR_CRAWL_BEGIN") {
-      void crawler.begin(message.archiveName||null).then(sendResponse,error=>
+      void crawler.begin(message.archiveName||null,message.checkpoint||null).then(sendResponse,error=>
         sendResponse({ok:false,error:String(error.message || error)}));
       return true;
     }
