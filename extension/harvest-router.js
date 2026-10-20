@@ -48,7 +48,10 @@ class HarvestRouter {
           valid=url.protocol==="https:"&&url.hostname==="disk.yandex.ru"&&
             "yandex-public:"+url.pathname.replace(/\/$/,"")===scope.sourceKey;
         }catch(_){}
-        if(!valid)await worker.stop();
+        if(!valid){
+          worker.invalidTab=true;
+          await worker.stop();
+        }
       }
       this.workers.set(scope.scopeId,worker);
     }
@@ -97,6 +100,9 @@ class HarvestRouter {
           await old.stop();
       }
     }
+    // A prior tab ID is no longer an ownership witness after the operator
+    // explicitly starts a new capture bound to a verified public link.
+    worker.invalidTab=false;
     return worker.begin(sender.tab.id,total);
   }
   async forEvent(item){
@@ -109,7 +115,7 @@ class HarvestRouter {
     if(owned.length===1)return owned[0];
     if(owned.length>1)return null;
     if(this.legacy.state.downloads[id])return this.legacy;
-    const active=all.filter(w=>w.recording()&&w.sourceAllowed(item)&&
+    const active=all.filter(w=>!w.invalidTab&&w.recording()&&w.sourceAllowed(item)&&
       (w.state.phase==="collecting"||w.summary().unresolvedCount>0));
     const sameTab=active.filter(w=>w.state.tabId===item.tabId);
     if(sameTab.length===1)return sameTab[0];
@@ -179,8 +185,11 @@ class HarvestRouter {
   async removedTab(tabId){
     await this.ready;
     for(const worker of this.workers.values()){
-      if(worker.state.tabId===tabId&&worker.state.phase==="collecting")
-        await worker.stop(); // Remains resumable with a one-hour late-event tail.
+      if(worker.state.tabId===tabId){
+        worker.invalidTab=true;
+        if(worker.state.phase==="collecting")
+          await worker.stop(); // Existing download IDs remain bound to this worker.
+      }
     }
   }
 }
