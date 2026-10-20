@@ -571,34 +571,35 @@
     if(running)return;
     const frame=bestFrame();
     if(!frame){notice="Открой корень архива и найди файлы.";show(notice);return;}
+    if(!scope)throw Error("Archive scope is unknown");
     running=true;stopRequested=false;treePhase="inventory";treeFrame=frame.frameId;
     tree=newTree();await saveTree();
     notice="Строю дерево папок. Не переключай папки вручную во время обхода.";
     show(notice);
     try {
-      let item=await inFrame(frame.frameId,{kind:"RR_SENSOR_CRAWL_BEGIN"});
+      let item=await inFrame(frame.frameId,{kind:"RR_SENSOR_CRAWL_BEGIN",archiveName:scope.archiveName});
       if(!item.ok)throw new Error(item.error||"Не удалось подтвердить корень архива");
       storeDirectory(item);await saveTree();
-      for(let iteration=0;iteration<EXPECTED_OBJECTS*3 && !stopRequested;iteration++){
+      for(let iteration=0;iteration<MAX_CRAWL_EVENTS && !stopRequested;iteration++){
         item=await inFrame(frame.frameId,{kind:"RR_SENSOR_CRAWL_STEP"});
         if(!item.ok)throw new Error((item.path||"")+" "+(item.error||"Ошибка навигации"));
         if(item.event==="complete") {
           finalizeTree(item);
           await saveTree();
           notice=tree.complete ?
-            "Все "+EXPECTED_OBJECTS+" объектов учтены. Можно запускать загрузку с исходной структурой." :
+            "Карта готова: "+Object.keys(tree.files).length+" файлов и "+(Object.keys(tree.directories).length-1)+" папок." :
             "Обход завершён, но состав архива не подтверждён полностью. Проверь отчёт: "+
-            tree.observedObjects+"/"+EXPECTED_OBJECTS+", неизвестных: "+
+            tree.observedObjects+" найдено; неизвестных: "+
             tree.unknown.length+", ошибок: "+tree.issues.length+".";
           show(notice);return;
         }
         if(item.event==="directory"){
           storeDirectory(item);await saveTree();
           progress="Обход: "+(item.path||"[корень]")+
-            " · объектов: "+tree.observedObjects+"/"+EXPECTED_OBJECTS;
+            " · объектов: "+tree.observedObjects;
           render();
         }
-        if(iteration===EXPECTED_OBJECTS*3-1)throw new Error("Превышен лимит этапов обхода");
+        if(iteration===MAX_CRAWL_EVENTS-1)throw new Error("Превышен лимит этапов обхода");
       }
       notice="Обход прерван. Карта сохранена частично. Для нового запуска вернись в корень RAR.";
       show(notice);
@@ -625,7 +626,7 @@
   }
   async function beginKnownPathNavigation(frameId){
     const nav=await inFrame(frameId,{kind:"RR_SENSOR_NAV_START",
-      directories:directoryManifestForNavigator()});
+      directories:directoryManifestForNavigator(),archiveName:scope?.archiveName||null});
     if(!nav.ok)throw new Error(nav.error||"Не удалось подтвердить корень");
     show("Адресная навигация: проверен корень; ненужные каталоги обходиться не будут.");
     return nav;
@@ -805,10 +806,10 @@
   }
 
   async function exportAutomaticHarvestReport(){
-    const report=await send({kind:"RR_HARVEST_REPORT"});
+    const report=await send({kind:"RR_HARVEST_REPORT",scope});
     const ledger=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY]||{};
     const legacy=Object.entries(ledger)
-      .filter(([path])=>path.startsWith("Disk-2.rar/"))
+      .filter(([path])=>scope?.sourceKey==="yandex-public:/d/_RSlWomRWmty1w"&&path.startsWith("Disk-2.rar/"))
       .map(([path,item])=>({
         sourcePath:path.slice("Disk-2.rar/".length),
         state:item.state,bytes:Number(item.bytes)||0,
@@ -816,7 +817,7 @@
       }));
     const merged={
       ...report,
-      archive:"Диск 2.rar",
+      archive:scope?.archiveName||null,scopeId:scope?.scopeId||null,
       sourceManifest:{objects:tree?.observedObjects||null,
         files:Object.keys(tree?.files||{}).length,
         directories:Object.keys(tree?.directories||{}).length,
@@ -827,7 +828,7 @@
     const uri=URL.createObjectURL(new Blob([JSON.stringify(merged,null,2)],
       {type:"application/json;charset=utf-8"}));
     const link=document.createElement("a");
-    link.href=uri;link.download="Disk-2.rar-download-log.json";
+    link.href=uri;link.download=scope?.reportName||"RAR-Rescue-download-log.json";
     document.body.append(link);link.click();link.remove();
     setTimeout(()=>URL.revokeObjectURL(uri),30000);
   }
@@ -841,25 +842,22 @@
     let captureBegun=false;
     let clicked=0,skipped=0,failedActions=0;
     try{
-      // All discovery and inventory work happens within this one button.
+      // Discover arbitrary files and directories from the web viewer.
       if(!bestFrame())await scan();
-      if(!tree?.complete){
-        const restored=(await chrome.storage.local.get(TREE_KEY))[TREE_KEY];
-        if(restored?.complete)tree=restored;
-      }
+      await ensureArchiveScope();
       if(!tree?.complete)await inventoryTree();
-      if(!tree?.complete || Object.keys(tree.files||{}).length!==1199)
-        throw new Error("Не удалось получить полную карту RAR. Скачивание не начато.");
+      if(!tree?.complete||tree.scopeId!==scope.scopeId)
+        throw new Error("Не удалось построить полную карту этого RAR. Скачивание не начато.");
       const frame=bestFrame();
       if(!frame)throw new Error("Просмотрщик Яндекса не найден");
       running=true;treePhase="raw-harvest";treeFrame=frame.frameId;
-      const previous=await send({kind:"RR_HARVEST_REPORT"});
+      const previous=await send({kind:"RR_HARVEST_REPORT",scope});
       const already=previous.requests||{};
       const groups=new Map();
       for(const file of Object.values(tree.files)){
         // Old strict-ledger "downloaded" states cannot prove the server
         // actually returned the requested file. In raw capture mode visit
-        // all 1199 original rows once, including those from earlier versions.
+        // all discovered members, using only this archive's click ledger.
         // Resume by ONLY skipping requests already recorded in this mode.
         const previousAttempt=already[file.sourcePath];
         // Only known row-lookup failures were NEVER clicked and may be retried.
@@ -882,7 +880,7 @@
         await exportAutomaticHarvestReport();
         return;
       }
-      await send({kind:"RR_HARVEST_BEGIN",total:1199});
+      await send({kind:"RR_HARVEST_BEGIN",scope,total:Object.keys(tree.files).length});
       captureBegun=true;
       await beginKnownPathNavigation(frame.frameId);
       const folders=[...groups.keys()].sort((a,b)=>a.localeCompare(b));
@@ -956,7 +954,7 @@
             if(!result.ok)throw new Error(result.error||"Нет учёта загрузки");
             const seconds=Math.max(0,Math.ceil((result.remainingMs||0)/1000));
             progress="Нажатий: "+clicked+"; ожидание: "+seconds+" с; "+
-              "последний исходный путь: Disk-2.rar/"+file.sourcePath+
+              "последний исходный путь: "+archiveRoot()+"/"+file.sourcePath+
               "; результат: "+result.state;
             if(Date.now()-lastCountRefresh>2200||result.state!=="waiting"){
               harvestSummary=await send({kind:"RR_HARVEST_STATUS"});
@@ -1248,7 +1246,6 @@
     }
   });
   void countDownloads().catch(()=>{});
-  void chrome.storage.local.get(TREE_KEY).then(data=>{
-    tree=data[TREE_KEY] || null;render();
-  }).catch(()=>{});
+  // The per-archive map is loaded on the first one-button run. Never load
+  // the legacy global Disk-2 map into an unrelated public archive.
 })();
