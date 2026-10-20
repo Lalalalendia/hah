@@ -53,5 +53,36 @@ function selectTwo(tree,ledger={}){
     sameBasename:pair[0].name.toLowerCase()===pair[1].name.toLowerCase(),
     candidates:candidates.length};
 }
-root.RarRescuePlan=Object.freeze({selectTwo});
+function pendingDirectories(tree,ledger={}){
+  if(!tree || !tree.scanned || !tree.complete || tree.observedObjects!==1286 ||
+     !tree.directories || !tree.files)
+    return {ok:false,error:"Archive manifest is not complete"};
+  const byFolder=new Map();
+  const blocked=[];
+  let skipped=0;
+  for(const file of Object.values(tree.files)){
+    if(!file || typeof file.sourcePath!=="string" ||
+       typeof file.folder!=="string" || typeof file.name!=="string" ||
+       file.sourcePath!==(file.folder?file.folder+"/":"")+file.name ||
+       !Object.prototype.hasOwnProperty.call(tree.directories,file.folder))
+      return {ok:false,error:"Invalid source path in archive manifest"};
+    const record=ledger["Disk-2.rar/"+file.sourcePath];
+    if(record?.state==="downloaded"){skipped++;continue;}
+    if(["armed","awaiting","needs-review","failed"].includes(record?.state) ||
+       file.status==="needs-review"){
+      blocked.push(file.sourcePath);continue;
+    }
+    const files=byFolder.get(file.folder)||[];
+    files.push({sourcePath:file.sourcePath,folder:file.folder,name:file.name});
+    byFolder.set(file.folder,files);
+  }
+  if(blocked.length)return {ok:false,error:"Previously requested files require manual review",
+    blocked:blocked.slice(0,15),blockedCount:blocked.length};
+  const groups=[...byFolder].sort(([a],[b])=>a.localeCompare(b))
+    .map(([path,files])=>({path,files}));
+  return {ok:true,groups,pending:groups.reduce((n,g)=>n+g.files.length,0),
+    skipped,visitedDirectoryCount:groups.length};
+}
+
+root.RarRescuePlan=Object.freeze({selectTwo,pendingDirectories});
 })(globalThis);
