@@ -353,12 +353,17 @@ class HarvestWorker {
       if(item.state==="complete"||item.state==="interrupted"){
         if(!row.completedAt)row.completedAt=iso();
         const r=row.sourcePath?s.requests[row.sourcePath]:null;
-        if(r){
+        // A late duplicate event from an earlier retry attempt may update
+        // that attempt's evidence, but must NEVER replace the current
+        // source state after a newer download completed.
+        const isCurrent=!!r&&Array.isArray(r.downloadIds)&&r.downloadIds.includes(id);
+        if(isCurrent){
           r.state=item.state==="complete"?"complete":"interrupted";
           r.finalDownloadId=id;
           r.completedAt=row.completedAt;
         }
-        this.log("download-"+item.state,row.sourcePath,
+        this.log(isCurrent?"download-"+item.state:"historical-download-"+item.state,
+          row.sourcePath,
           "id="+id+" expected="+(row.expectedFullPath||"unknown")+
           " actual="+(row.actualSavedFullPath||"missing"));
       }
