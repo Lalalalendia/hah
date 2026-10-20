@@ -27,19 +27,30 @@
   let harvestLoopActive = false;
   let scope = null;
   function archiveRoot(){return scope?.outputRoot||ARCHIVE;}
-  function safeArchiveTitle(){
-    const topTitle=String(document.title||"").split(/\s+[—|]\s+/)[0].trim();
-    const viewerTitle=String(bestFrame()?.archiveName||"").trim();
-    return RarRescueArchiveScope.archiveName(viewerTitle||topTitle);
+  let verifiedViewerTitle=null;
+  function archiveTitleResolution(){
+    const viewer=String(bestFrame()?.archiveName||"").trim();
+    const meta=document.querySelector('meta[property="og:title"]')?.content||
+      document.querySelector('meta[name="twitter:title"]')?.content||"";
+    return RarRescueArchiveScope.resolveName(location.href,[
+      {source:"viewer",value:viewer},
+      {source:"metadata",value:meta},
+      {source:"page",value:String(document.title||"")}
+    ]);
   }
   async function ensureArchiveScope(){
-    const detected=RarRescueArchiveScope.fromYandexPublicLink(location.href,safeArchiveTitle());
+    const resolved=archiveTitleResolution();
+    const detected=RarRescueArchiveScope.fromYandexPublicLink(
+      location.href,resolved.archiveName);
     if(scope&&!RarRescueArchiveScope.sameScope(scope,detected))
       throw Error("The active archive changed during recovery");
     // Output ownership must be allocated by the single background worker,
     // not by two independent tabs racing storage.get/storage.set.
     await send({kind:"RR_RESERVE_OUTPUT_ROOT",scope:detected});
     scope=detected;
+    verifiedViewerTitle=resolved.viewerExpectedTitle;
+    if(resolved.fallback)show("Яндекс не передал имя архива. Использую папку "+
+      resolved.archiveName+" (по ID публичной ссылки); исходные имена файлов сохраняются.");
     if(!tree){
       const store=await chrome.storage.local.get(scope.treeStorageKey);
       const saved=store[scope.treeStorageKey];
@@ -588,7 +599,7 @@
 
   async function inventoryPass(frameId,checkpoint){
     let item=await inFrame(frameId,{
-      kind:"RR_SENSOR_CRAWL_BEGIN",archiveName:scope.archiveName,checkpoint
+      kind:"RR_SENSOR_CRAWL_BEGIN",archiveName:verifiedViewerTitle,checkpoint
     });
     if(!item.ok)throw new Error(item.error||"Не удалось подтвердить корень архива");
     storeDirectory(item);await saveTree();
@@ -704,7 +715,7 @@
   }
   async function beginKnownPathNavigation(frameId){
     const nav=await inFrame(frameId,{kind:"RR_SENSOR_NAV_START",
-      directories:directoryManifestForNavigator(),archiveName:scope?.archiveName||null});
+      directories:directoryManifestForNavigator(),archiveName:verifiedViewerTitle});
     if(!nav.ok)throw new Error(nav.error||"Не удалось подтвердить корень");
     show("Адресная навигация: проверен корень; ненужные каталоги обходиться не будут.");
     return nav;
