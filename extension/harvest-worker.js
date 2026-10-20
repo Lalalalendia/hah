@@ -3,14 +3,14 @@
  * Crucial invariant: NEVER rename an unexpected server filename to the
  * viewer's requested filename. Store the browser-reported basename and
  * separately log source-path attribution as evidence, not verified identity.
- * All files go straight into the browser Downloads folder, no subfolders.
+ * Preserve known archive directory paths; no extra staging or unknown folders.
  */
 (function(root){
 "use strict";
-const KEY="rr_harvest_v11";
+const KEY="rr_harvest_v12"; // fresh scope so flat v0.11 records cannot hide hierarchy
 const MAX_AGE_MS=60*60*1000;
-const ACTIVE_ASSOCIATION_MS=18000;
-const SCHEMA="yandex-archive-raw-harvest-v1";
+const ACTIVE_ASSOCIATION_MS=5500; // tentative timing, not verified content identity
+const SCHEMA="yandex-archive-raw-harvest-v2";
 function basename(filename){
   return String(filename||"").replace(/\\/g,"/").split("/").pop().slice(0,220);
 }
@@ -131,9 +131,12 @@ class RawHarvest {
         this.state.lastClick=path;
         this.audit("clicked",path,"Synthetic Yandex file-row action");
       }else{
-        entry.state="click-failed";
-        entry.reason=String(reason||"Action not available").slice(0,160);
-        this.audit("not-sent",path,entry.reason);
+        // A frame communication error does not prove the browser click failed.
+        if(!entry.assignedDownloadIds.length){
+          entry.state="click-unknown";
+          entry.reason=String(reason||"Action not confirmed").slice(0,160);
+        }
+        this.audit("click-not-confirmed",path,String(reason||"unknown").slice(0,120));
       }
       return {ok:true,path,state:entry.state};
     });
@@ -149,11 +152,14 @@ class RawHarvest {
     if(exact.length===1){
       return {request:exact[0],confidence:"matching-name-unverified"};
     }
-    const fresh=recent.filter(x=>now-x.clickedAt<=ACTIVE_ASSOCIATION_MS);
-    if(recent.length===1 && fresh.length===1){
+    // When Yandex returns a different filename, associate tentatively
+    // with the most recent click; clearly record uncertainty in the journal.
+    const fresh=recent.filter(x=>now-x.clickedAt<=ACTIVE_ASSOCIATION_MS)
+      .sort((a,b)=>b.clickedAt-a.clickedAt);
+    if(fresh.length && (fresh.length===1 || fresh[0].clickedAt>fresh[1].clickedAt)){
       return {request:fresh[0],confidence:
         reported.toLowerCase()===fresh[0].name.toLowerCase()?
-          "single-request-name-match":"single-request-name-mismatch"};
+          "recent-click-name-match-unverified":"recent-click-name-mismatch-unverified"};
     }
     return {request:null,confidence:recent.length?"ambiguous-delayed-response":"unattributed"};
   }
@@ -184,7 +190,11 @@ class RawHarvest {
         return {handled:true,filename:existing.outputRelative,conflictAction:"uniquify"};
       }
       const matched=this.choose(item);
-      const route=safeName; // Downloads root only: no folders or substitutions
+      // Preserve original archive folder path but use the filename that
+      // Yandex actually returned. Unattributed responses go to archive ROOT.
+      const sourceParts=(matched.request?.folder||"").split("/").filter(Boolean);
+      if(sourceParts.some(x=>x===".."))throw Error("Unsafe archive directory");
+      const route=["Disk-2.rar",...sourceParts.map(this.utils.component),safeName].join("/");
       const record={
         ...(existing||{}),id:item.id,
         browserName:observed||"(browser did not report a name)",
@@ -220,8 +230,13 @@ class RawHarvest {
       record.totalBytes=Number(item?.totalBytes)||0;
       record.completedAt=state==="complete"||state==="interrupted"?
         new Date().toISOString():null;
-      // Save only the browser-assigned basename, never the local absolute path.
-      record.actualOutputRelative=basename(item?.filename)||"(unknown)";
+      // Record an archive-relative path without exposing a local OS path.
+      const full=String(item?.filename||"").replace(/\\/g,"/");
+      const marker="/Disk-2.rar/";
+      const markerAt=full.toLowerCase().lastIndexOf(marker.toLowerCase());
+      record.actualOutputRelative=markerAt>=0 ?
+        full.slice(markerAt+1,markerAt+1+1300) :
+        basename(item?.filename)||"(unknown)";
       record.actualBrowserName=basename(item?.filename)||record.browserName;
       record.exists=item?.exists!==false;
       if(state==="interrupted")record.error=String(item?.error||"interrupted").slice(0,100);
