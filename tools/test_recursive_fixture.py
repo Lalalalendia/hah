@@ -158,6 +158,38 @@ try:
     assert not mismatched["ok"] and "checkpoint-directory-changed" in mismatched["error"],mismatched
     print("PASS: changed source root invalidates stored inventory")
     drv.execute_script("trees[''][0][0]='HELP';draw()")
+    # A changed NESTED listing must be rejected, even though root listing is
+    # unchanged. Keep enough path context to return to root for a fresh scan.
+    drv.execute_script("""
+      window.currentPath='';trees['HELP'].append(['ADDED.TXT','file']);draw();
+      window.__crawler=new window.RarRescueCrawler(document,window.RarRescueDOM,
+        {delay:()=>Promise.resolve()});
+    """)
+    mid_checkpoint={"directories":checkpoint["directories"],
+                    "completedSubtrees":["HELP/SUB"]}
+    assert drv.execute_async_script("""
+      const done=arguments[arguments.length-1];
+      window.__crawler.begin('Диск 2.rar',arguments[0]).then(done);
+    """,mid_checkpoint)["ok"]
+    mismatch=call("step")
+    assert not mismatch["ok"] and "checkpoint-directory-changed:HELP" in mismatch["error"],mismatch
+    rewind=drv.execute_async_script("""
+      const done=arguments[arguments.length-1];
+      window.__crawler.rewindToRoot('Диск 2.rar').then(done);
+    """)
+    assert rewind["ok"] and rewind["rootReached"],rewind
+    assert drv.execute_script("return window.currentPath")==""
+    fresh=call("begin")
+    assert fresh["ok"],fresh
+    for _ in range(20):
+        item=call("step")
+        assert item["ok"],item
+        if item["event"]=="complete":break
+    else:raise AssertionError("Rebuilt crawler did not complete")
+    assert item["objects"]==13 and item["paths"]==6,item
+    drv.execute_script("trees['HELP'].pop();window.currentPath='';draw()")
+    print("PASS: mutated nested listing rejected; verified rewind allows clean 13-member rebuild")
+
     # An interrupted crawl leaves the viewer inside a nested folder.
     # Rewinding uses the VERIFIED DFS parent listings, not an unchecked click.
     drv.execute_script("window.currentPath='';draw()")
