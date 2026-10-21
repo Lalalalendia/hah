@@ -1,7 +1,7 @@
 const assert=require("node:assert/strict");
 const fs=require("node:fs"),vm=require("node:vm"),path=require("node:path");
 const root=path.resolve(__dirname,"..");
-let onMessage,readyRestoreReads=0,outputReads=0;
+let onMessage,readyRestoreReads=0,legacyReads=0,outputReads=0;
 const db={},session={};
 const noop={addListener(){}};
 const chrome={
@@ -19,6 +19,7 @@ const chrome={
           return new Promise(()=>{});
         }
         if(keys==="rr_output_owners_v15")outputReads++;
+        if(Array.isArray(keys)&&keys.includes("rr_harvest_v13"))legacyReads++;
         if(Array.isArray(keys))return Object.fromEntries(keys.map(k=>[k,db[k]]));
         return {[keys]:db[keys]};
       },
@@ -54,14 +55,17 @@ async function within(p,ms=600){
   })]);}finally{clearTimeout(t);}
 }
 (async()=>{
-  assert.equal(readyRestoreReads,0,"Cold worker must not eagerly load archived captures");
+  assert.equal(readyRestoreReads,0,"Cold worker must not eagerly load scoped captures");
+  assert.equal(legacyReads,0,"Cold worker must not eagerly load legacy captures");
   // Bootstrap remains safe even if restoration is later initiated and stalls.
   const originalScope=scopeApi.fromYandexViewer("https://disk.yandex.ru/client/disk",
     "Example.rar","0123456789abcdef");
   assert((await within(request(originalScope,"https://disk.yandex.ru/client/disk"))).ok);
-  assert.equal(readyRestoreReads,0,"Folder reservation must not start legacy restoration");
+  assert.equal(readyRestoreReads,0,"Folder reservation must not start scoped restoration");
+  assert.equal(legacyReads,0,"Folder reservation must not start legacy restoration");
   void vm.runInContext("rawRouter.ready",ctx);
   assert.equal(readyRestoreReads,1,"Explicit capture state request must start lazy restoration");
+  assert.equal(legacyReads,1,"Legacy lookup must run only after explicit capture request");
   // Browser scan and sensor reports must also work before any large
   // session is loaded, otherwise the only user-visible button remains gray.
   function call(payload,sender){
