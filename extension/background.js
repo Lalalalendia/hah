@@ -188,6 +188,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   });
   const respond=payload=>guard.reply(payload);
   (async () => {
+    // Reserving an output root needs only the tiny ownership index. It MUST
+    // NOT depend on legacy watchers or restoration of multi-MB capture logs.
+    // In MV3 a worker restart can spend minutes restoring archived sessions.
+    // Validate the sender before the fast-path; keep reservations serialized.
+    if(message.kind==="RR_RESERVE_OUTPUT_ROOT"){
+      if(!pageAllowed(sender))throw Error("Not a Yandex Disk tab");
+      if(sender.frameId!==0)throw Error("Only main archive panel may reserve output");
+      respond(await reserveOutputRoot(sender,message.scope));
+      return;
+    }
     await ready;
     if (!pageAllowed(sender)) throw new Error("Not a Yandex Disk tab");
     const tabId = sender.tab.id;
@@ -269,10 +279,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       respond({...delivery.result,viewerFrameId:delivery.frameId,
         viewerReconnected:delivery.reconnected});
       return;
-    }
-    if(message.kind==="RR_RESERVE_OUTPUT_ROOT") {
-      if(sender.frameId!==0)throw Error("Only main archive panel may reserve output");
-      respond(await reserveOutputRoot(sender,message.scope));return;
     }
     if(message.kind==="RR_HARVEST_BEGIN") {
       if(sender.frameId!==0)throw new Error("Only parent frame can start raw capture");
