@@ -46,6 +46,7 @@ jobs:
           node --check extension/harvest-wakeup.js
           node --check extension/tests/harvest-wakeup.cjs
           node --check extension/tests/scan-ui.cjs
+          node --check extension/tests/harvest-startup.cjs
           node --check extension/tests/viewer-channel.cjs
           node --check extension/tests/checkpoint-resume.cjs
           node --check extension/tests/inventory-auto-retry.cjs
@@ -77,6 +78,7 @@ jobs:
           node extension/tests/viewer-channel.cjs
           node extension/tests/harvest-wakeup.cjs
           node extension/tests/scan-ui.cjs
+          node extension/tests/harvest-startup.cjs
           node extension/tests/checkpoint-resume.cjs
           node extension/tests/inventory-auto-retry.cjs
           node extension/tests/output-reservation.cjs
@@ -92,6 +94,6 @@ jobs:
       - name: Upload ready-to-install extension directory
         uses: actions/upload-artifact@v4
         with:
-          name: rar-rescue-v0158
+          name: rar-rescue-v0159
           path: extension/
           retention-days: 7
