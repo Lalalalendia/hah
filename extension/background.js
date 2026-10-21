@@ -1,14 +1,61 @@
 /* Manifest V3 service worker. All state stays on the user's machine. */
-importScripts("common.js","harvest-worker.js");
+importScripts("common.js","archive-scope.js","harvest-worker.js","harvest-router.js","viewer-channel.js","message-guard.js");
 "use strict";
 
+const viewerChannel=new globalThis.RarRescueViewerChannel(chrome);
 const STATE_KEY = "rr_pending";
 const LEDGER_KEY = "rr_ledger";
-const rawHarvest = new globalThis.RarRescueHarvestWorker(chrome,RarRescueUtils);
-const watchers = {};
-const ready = chrome.storage.session.get(STATE_KEY).then(data => {
-  Object.assign(watchers, data[STATE_KEY] || {});
-}).catch(() => {});
+const rawRouter=new globalThis.RarRescueHarvestRouter(
+  chrome,RarRescueUtils,RarRescueArchiveScope,RarRescueHarvestWorker);
+const watchers={};
+const ready=chrome.storage.session.get(STATE_KEY).then(session=>{
+  Object.assign(watchers,session[STATE_KEY]||{});
+}).catch(()=>{});
+
+const OUTPUT_OWNERS_KEY="rr_output_owners_v15";
+// Never chain another owner allocation behind an unresolved storage promise:
+// one stuck Chrome storage call previously poisoned every later request.
+let outputReservationInFlight=false;
+async function reserveOutputRoot(sender,raw){
+  if(outputReservationInFlight)
+    throw Error("Previous output reservation has not finished; no new reservation was queued");
+  outputReservationInFlight=true;
+  try{
+    if(!raw||typeof raw.archiveName!=="string"||
+       !Number.isInteger(sender?.tab?.id))throw Error("Missing archive identity");
+    const scope=RarRescueArchiveScope.restoreScope(raw);
+    if(!scope||!RarRescueArchiveScope.matchesTab(scope,sender.tab.url)||
+       scope.outputRoot!==raw.outputRoot)
+      throw Error("Archive identity does not match the current Yandex web viewer");
+    const stored=await chrome.storage.local.get(OUTPUT_OWNERS_KEY);
+    const owners=stored[OUTPUT_OWNERS_KEY]||{};
+    const root=scope.outputRoot.normalize("NFC").toLowerCase();
+    if(Object.prototype.hasOwnProperty.call(owners,root)){
+      if(owners[root]!==scope.scopeId)
+        throw Error("Output folder is reserved by another archive; choose a distinct target");
+      // A confirmed same-scope owner is enough for idempotent registration.
+      // Do not wait for an unrelated old archive registry.
+      return {ok:true,scopeId:scope.scopeId,outputRoot:scope.outputRoot};
+    }
+    const known=await chrome.storage.local.get("rr_active_scopes_v16");
+    // Even if the old ownership index is missing, an established capture
+    // registered for this folder cannot be silently stolen by a fresh RAR.
+    for(const rawOther of Array.isArray(known.rr_active_scopes_v16)?
+        known.rr_active_scopes_v16.slice(0,64):[]){
+      const other=RarRescueArchiveScope.restoreScope(rawOther);
+      if(other&&other.scopeId!==scope.scopeId&&
+         other.outputRoot.normalize("NFC").toLowerCase()===root)
+        throw Error("Output folder is reserved by another archive in the saved registry");
+    }
+    if(owners[root]!==scope.scopeId){
+      owners[root]=scope.scopeId;
+      await chrome.storage.local.set({[OUTPUT_OWNERS_KEY]:owners});
+    }
+    return {ok:true,scopeId:scope.scopeId,outputRoot:scope.outputRoot};
+  }finally{
+    outputReservationInFlight=false;
+  }
+}
 
 async function saveWatchers() {
   await chrome.storage.session.set({ [STATE_KEY]: watchers });
@@ -18,8 +65,16 @@ function pageAllowed(sender) {
   if (!sender || !sender.tab || !Number.isInteger(sender.tab.id)) return false;
   try { const topHost = new URL(sender.tab.url).hostname;
     const frameHost = new URL(sender.url || sender.tab.url).hostname;
-    return topHost === "disk.yandex.ru" &&
-      ["disk.yandex.ru", "docviewer.yandex.ru", "docviewer.360.yandex.ru"].includes(frameHost); }
+    const allowed=["disk.yandex.ru","docviewer.yandex.ru","docviewer.360.yandex.ru"];
+    let originHost="";
+    try{originHost=new URL(sender.origin||"").hostname;}catch(_){}
+    if(!originHost && String(sender.url||"").startsWith("blob:")){
+      try{originHost=new URL(sender.url).origin.split("://").pop();}catch(_){}
+    }
+    return topHost==="disk.yandex.ru" &&
+      (allowed.includes(frameHost)||
+        (["about:","blob:"].includes(new URL(sender.url||sender.tab.url).protocol)&&
+         allowed.includes(originHost))); }
   catch (_) { return false; }
 }
 
@@ -131,30 +186,87 @@ chrome.action.onClicked.addListener(async tab => {
   catch (_) { /* Content script not yet loaded. */ }
 });
 
-chrome.runtime.onMessage.addListener((message, sender, respond) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !String(message.kind || "").startsWith("RR_")) return false;
+  const guard=new RarRescueMessageGuard(message,sendResponse,{
+    onTimeout:details=>{
+      // Diagnostic only: do not log private file paths, signed URLs or tokens.
+      void (async()=>{
+        let tab=null;
+        try{tab=await chrome.tabs.get(sender.tab?.id);}catch(_){}
+        await chrome.storage.local.set({rr_last_command_failure_v1:{
+          ...details,at:new Date().toISOString(),
+          tabActive:tab?.active??null,tabFrozen:tab?.frozen??null,
+          tabDiscarded:tab?.discarded??null
+        }});
+      })().catch(()=>{});
+    }
+  });
+  const respond=payload=>guard.reply(payload);
   (async () => {
+    // Lightweight setup and viewer discovery never need the old download
+    // journal. A cold MV3 worker must not wait to restore thousands of rows
+    // before it can find the iframe or reserve a folder.
+    if(["RR_RESERVE_OUTPUT_ROOT","RR_SCAN_FRAMES","RR_SENSOR_REPORT","RR_SENSOR_PICKED",
+        "RR_HARVEST_PLAN","RR_FRAME_CALL"].includes(message.kind)){
+      if(!pageAllowed(sender))throw Error("Not a Yandex Disk tab");
+      const tabId=sender.tab.id;
+      if(message.kind==="RR_RESERVE_OUTPUT_ROOT"){
+        if(sender.frameId!==0)throw Error("Only main archive panel may reserve output");
+        respond(await reserveOutputRoot(sender,message.scope));return;
+      }
+      if(message.kind==="RR_HARVEST_PLAN"){
+        if(sender.frameId!==0)throw Error("Only main archive panel may inspect a queue plan");
+        const scope=RarRescueArchiveScope.restoreScope(message.scope);
+        if(!scope||!RarRescueArchiveScope.matchesTab(scope,sender.tab.url))
+          throw Error("Archive identity does not match the current Yandex tab");
+        // Read only this archive's journal; never hydrate all previously
+        // opened archives just to skip already-downloaded source paths.
+        const data=await chrome.storage.local.get(scope.harvestStorageKey);
+        respond(RarRescueHarvestWorker.planFromState(
+          data[scope.harvestStorageKey],scope.scopeId));
+        return;
+      }
+      if(message.kind==="RR_FRAME_CALL"){
+        if(sender.frameId!==0)throw Error("Only main archive panel may call viewer");
+        const frameId=Number(message.frameId),payload=message.payload||{};
+        if(!Number.isInteger(frameId)||frameId<0)
+          throw Error("Invalid Yandex viewer frame");
+        if(!["RR_SENSOR_LIST","RR_SENSOR_TRIGGER","RR_SENSOR_SCROLL",
+          "RR_SENSOR_CRAWL_BEGIN","RR_SENSOR_CRAWL_STEP","RR_SENSOR_CRAWL_STATUS",
+          "RR_SENSOR_NAV_START","RR_SENSOR_NAV_GOTO","RR_SENSOR_NAV_STATUS"].includes(payload.kind))
+          throw Error("Unsupported viewer command");
+        const delivery=await viewerChannel.invoke(tabId,frameId,payload);
+        respond({...delivery.result,viewerFrameId:delivery.frameId,
+          viewerReconnected:delivery.reconnected});
+        return;
+      }
+      if(message.kind==="RR_SCAN_FRAMES"){
+        if(sender.frameId!==0)throw Error("Only main archive panel may scan");
+        const id=String(message.requestId||"").slice(0,80);
+        await chrome.tabs.sendMessage(tabId,{kind:"RR_SENSOR_SCAN",requestId:id});
+        respond({ok:true});return;
+      }
+      const allowed=message.kind==="RR_SENSOR_REPORT"?
+        ["kind","requestId","host","names","count","folders","unknown",
+         "rowSelector","example","iconSamples","archiveName"]:
+        ["kind","host","found","name","ancestry","clickedTag","count"];
+      const sanitized={};
+      for(const field of allowed)
+        if(Object.prototype.hasOwnProperty.call(message,field))
+          sanitized[field]=message[field];
+      sanitized.frameId=sender.frameId;
+      await notify(tabId,sanitized);
+      respond({ok:true});return;
+    }
     await ready;
+    // Explicit RR_HARVEST_* commands bind their own trusted archive scope.
+    // Never hydrate every historical capture before this archive can resume.
+    // Legacy/unscoped operations retain the full reconciliation gate.
+    if(!message.kind.startsWith("RR_HARVEST_")||!message.scope)
+      await rawRouter.ready;
     if (!pageAllowed(sender)) throw new Error("Not a Yandex Disk tab");
     const tabId = sender.tab.id;
-    if (message.kind === "RR_SENSOR_REPORT" || message.kind === "RR_SENSOR_PICKED") {
-      const allowed = message.kind === "RR_SENSOR_REPORT" ?
-        ["kind", "requestId", "host", "names", "count", "folders", "unknown", "rowSelector", "example", "iconSamples", "knownReadme"] :
-        ["kind", "host", "found", "name", "ancestry", "clickedTag", "count"];
-      const sanitized = {};
-      for (const field of allowed) if (Object.prototype.hasOwnProperty.call(message, field)) sanitized[field] = message[field];
-      sanitized.frameId = sender.frameId;
-      await notify(tabId, sanitized);
-      respond({ ok: true });
-      return;
-    }
-    if (message.kind === "RR_SCAN_FRAMES") {
-      if (sender.frameId !== 0) throw new Error("Only the top-level panel can scan");
-      const id = String(message.requestId || "").slice(0, 80);
-      await chrome.tabs.sendMessage(tabId, { kind: "RR_SENSOR_SCAN", requestId: id });
-      respond({ ok: true });
-      return;
-    }
     if (message.kind === "RR_PICK_FILE" || message.kind === "RR_STOP_PICK") {
       if (sender.frameId !== 0) throw new Error("Only the top-level panel can pick");
       const kind = message.kind === "RR_PICK_FILE" ? "RR_SENSOR_START_PICK" : "RR_SENSOR_STOP_PICK";
@@ -202,19 +314,6 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       respond({ok:true,matches});
       return;
     }
-    if (message.kind === "RR_FRAME_CALL") {
-      if (sender.frameId !== 0) throw new Error("Only the top-level panel can call viewer");
-      const frameId = Number(message.frameId);
-      if (!Number.isInteger(frameId) || frameId < 0) throw new Error("Invalid viewer frame");
-      const payload = message.payload || {};
-      if (!["RR_SENSOR_LIST", "RR_SENSOR_TRIGGER", "RR_SENSOR_SCROLL",
-        "RR_SENSOR_CRAWL_BEGIN", "RR_SENSOR_CRAWL_STEP", "RR_SENSOR_CRAWL_STATUS", "RR_SENSOR_NAV_START", "RR_SENSOR_NAV_GOTO", "RR_SENSOR_NAV_STATUS"].includes(payload.kind)) {
-        throw new Error("Unsupported viewer command");
-      }
-      const result = await chrome.tabs.sendMessage(tabId, payload, { frameId });
-      respond(result && typeof result === "object" ? result : {ok:false,error:"Viewer did not respond"});
-      return;
-    }
     if(message.kind==="RR_HARVEST_BEGIN") {
       if(sender.frameId!==0)throw new Error("Only parent frame can start raw capture");
       // The previous strict attempt may still respond much later. Preserve
@@ -224,42 +323,55 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         await markReview(record,"Superseded by raw as-returned archive collection");
       for(const id of Object.keys(watchers))delete watchers[id];
       await saveWatchers();
-      const result=await rawHarvest.begin(tabId,1199);
+      const result=await rawRouter.start(sender,message.scope||null,Number(message.total??1199));
       respond(result);return;
     }
     if(message.kind==="RR_HARVEST_STOP") {
       if(sender.frameId!==0)throw new Error("Only parent frame can stop raw capture");
-      respond(await rawHarvest.stop());return;
+      const worker=await rawRouter.bind(sender,message.scope||null);
+      respond(await worker.stop());return;
     }
     if(message.kind==="RR_HARVEST_ARM") {
       if(sender.frameId!==0)throw new Error("Only parent frame can reserve raw source");
-      respond(await rawHarvest.arm(String(message.folder||""),String(message.filename||"")));
+      const worker=await rawRouter.bind(sender,message.scope||null);
+      respond(await worker.arm(String(message.folder||""),String(message.filename||"")));
+      return;
+    }
+    if(message.kind==="RR_HARVEST_LOOKUP_FAILED") {
+      if(sender.frameId!==0)throw Error("Only main frame can record a failed row lookup");
+      const worker=await rawRouter.bind(sender,message.scope||null);
+      respond(await worker.lookupFailed(String(message.folder||""),
+        String(message.filename||""),String(message.reason||"")));
       return;
     }
     if(message.kind==="RR_HARVEST_DISPATCH") {
       if(sender.frameId!==0)throw new Error("Only parent frame can dispatch a click");
-      respond(await rawHarvest.dispatch(String(message.folder||""),String(message.filename||"")));
+      const worker=await rawRouter.bind(sender,message.scope||null);
+      respond(await worker.dispatch(String(message.folder||""),String(message.filename||"")));
       return;
     }
     if(message.kind==="RR_HARVEST_CHECK") {
       if(sender.frameId!==0)throw new Error("Only parent frame can check a download");
-      respond(await rawHarvest.check(String(message.folder||""),String(message.filename||"")));
+      const worker=await rawRouter.bind(sender,message.scope||null);
+      respond(await worker.check(String(message.folder||""),String(message.filename||"")));
       return;
     }
     if(message.kind==="RR_HARVEST_SENT") {
       if(sender.frameId!==0)throw new Error("Only parent frame can confirm archive-row action");
-      respond(await rawHarvest.sent(String(message.folder||""),
+      const worker=await rawRouter.bind(sender,message.scope||null);
+      respond(await worker.sent(String(message.folder||""),
         String(message.filename||""),message.clicked===true,String(message.reason||""),
         message.definiteFailure===true));
       return;
     }
     if(message.kind==="RR_HARVEST_STATUS") {
       if(sender.frameId!==0)throw new Error("Only parent frame can inspect raw capture");
-      respond(await rawHarvest.status());return;
+      const worker=await rawRouter.bind(sender,message.scope||null);
+      respond(await worker.status());return;
     }
     if(message.kind==="RR_HARVEST_REPORT") {
       if(sender.frameId!==0)throw new Error("Only parent frame can export raw capture");
-      respond(await rawHarvest.report());return;
+      respond(await rawRouter.report(sender,message.scope||null));return;
     }
     if(message.kind==="RR_PREPARE_RESUME") {
       if(sender.frameId!==0)throw new Error("Only main recovery panel can inspect or defer transfers");
@@ -361,7 +473,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       return;
     }
     if (message.kind === "RR_ARM") {
-      if(rawHarvest.recording())throw new Error("Raw archive capture is active; strict download is disabled");
+      if(rawRouter.recording())throw new Error("Raw archive capture is active; strict download is disabled");
       if (sender.frameId !== 0) throw new Error("Only the top-level panel can arm a download");
       const token=String(message.token||"").slice(0,80);
       const key=String(message.key||"").slice(0,500);
@@ -487,7 +599,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
 chrome.downloads.onCreated.addListener(item => {
   void (async () => {
     await ready;
-    if(await rawHarvest.created(item))return;
+    if(await rawRouter.created(item))return;
     if (!RarRescueUtils.isDownloadHost(item.url)) return;
     const record = findActiveWatcher(item);
     if (!record || record.downloadId != null) return;
@@ -501,7 +613,7 @@ chrome.downloads.onCreated.addListener(item => {
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
   void (async () => {
     await ready;
-    const raw=await rawHarvest.determine(item);
+    const raw=await rawRouter.determine(item);
     if(raw.handled){
       suggest({filename:raw.filename,conflictAction:raw.conflictAction});
       return;
@@ -524,7 +636,22 @@ chrome.downloads.onChanged.addListener(delta => {
   void (async () => {
     await ready;
     const item=(await chrome.downloads.search({id:delta.id}))[0] || {};
-    if(await rawHarvest.changed(delta.id,item))return;
+    if(await rawRouter.changed(delta.id,item)){
+      const owner=rawRouter.ownerForDownloadId(delta.id);
+      const row=owner?.state.downloads[String(delta.id)];
+      const source=row?.sourcePath;
+      const request=source?owner.state.requests[source]:null;
+      // Emit a wake only for the current issued click in this archive.
+      // Download IDs are browser-issued; never infer ownership by filename.
+      if(owner?.scope&&source&&request?.downloadIds?.includes(delta.id)&&
+         owner.state.phase==="collecting"){
+        await notify(owner.state.tabId,{
+          kind:"RR_HARVEST_TERMINAL",scopeId:owner.scope.scopeId,
+          sourcePath:source,downloadId:delta.id,state:delta.state.current
+        });
+      }
+      return;
+    }
     const record=findByDownloadId(delta.id);
     if(!record)return;
     await completeFromChrome(record,item);
@@ -534,6 +661,7 @@ chrome.downloads.onChanged.addListener(delta => {
 chrome.tabs.onRemoved.addListener(tabId => {
   void (async () => {
     await ready;
+    await rawRouter.removedTab(tabId);
     if (watchers[String(tabId)]) {
       delete watchers[String(tabId)];
       await saveWatchers();

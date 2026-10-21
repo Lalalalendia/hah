@@ -9,7 +9,7 @@
     if (/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(s)) s = "_" + s;
     return s.slice(0, 120);
   }
-  function relative(folder, filename) {
+  function relative(folder, filename, archiveRoot=null) {
     const raw = String(folder || "").replace(/\\/g, "/").split("/");
     if (raw.some(x => x === "..")) throw new Error("Path traversal rejected");
     const safeFolder = raw.filter(x => x && x !== ".").map(component);
@@ -17,7 +17,8 @@
     if (!rawFile || /[/\\]/.test(rawFile) || rawFile === "." || rawFile === "..") {
       throw new Error("Invalid filename");
     }
-    return ["YandexRARRecovery", "Disk-2.rar"].concat(safeFolder, component(rawFile)).join("/");
+    const root=archiveRoot==null?["YandexRARRecovery","Disk-2.rar"]:[component(archiveRoot)];
+    return root.concat(safeFolder,component(rawFile)).join("/");
   }
   function isDownloadHost(url) {
     try {

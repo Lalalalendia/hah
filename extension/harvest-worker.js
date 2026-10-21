@@ -13,17 +13,33 @@ const SAFE_ROOT="Disk-2.rar";
 const VALID_STATES=new Set(["complete","interrupted","in_progress"]);
 const normPath=value=>String(value||"").replace(/\\/g,"/");
 const basename=value=>normPath(value).split("/").pop().slice(0,220);
-const ownReport=item=>/^Disk-2\.rar-download-log(?: \([0-9]+\))?\.json$/i.test(basename(item?.filename));
+const ownReport=(item,rootName=SAFE_ROOT)=>{
+  const actual=basename(item?.filename).normalize("NFC").toLowerCase()
+    .replace(/ \([0-9]+\)(?=\.json$)/i,"");
+  return actual===(rootName+"-download-log.json").normalize("NFC").toLowerCase();
+};
 const sourcePath=(folder,name)=>(folder?folder+"/":"")+name;
 const iso=()=>new Date().toISOString();
-const empty=()=>({schema:SCHEMA,phase:"idle",batchId:null,tabId:null,
-  createdAt:null,startedAt:0,tailDeadline:0,requests:{},downloads:{},audit:[],
-  sourcePathsCount:1199,migratedFrom:null});
+const empty=(total=1199,scopeId=null)=>({schema:SCHEMA,phase:"idle",
+  scopeId,batchId:null,tabId:null,createdAt:null,startedAt:0,tailDeadline:0,
+  requests:{},downloads:{},audit:[],sourcePathsCount:total,migratedFrom:null});
+const SAFE_RETRY_CODES=/^(NETWORK_(FAILED|TIMEOUT|DISCONNECTED|SERVER_DOWN)|SERVER_(FAILED|UNREACHABLE|BAD_CONTENT)|FILE_TRANSIENT_ERROR)$/;
+const MAX_TRANSFER_RETRIES=2,MAX_LOOKUP_ATTEMPTS=3;
 function isSafeToRetryLookup(record){
   return record?.state==="not-clicked" &&
     !Number(record.clickConfirmedAt||0) &&
     !Number(record.clickedAt||0) &&
-    !record.downloadIds?.length;
+    !record.downloadIds?.length &&
+    Number(record.lookupAttempts||0)<MAX_LOOKUP_ATTEMPTS;
+}
+function isSafeToRetryInterrupted(record,downloads){
+  if(record?.state!=="interrupted"||
+     Number(record.retryCount||0)>=MAX_TRANSFER_RETRIES||
+     !record.downloadIds?.length)return false;
+  return record.downloadIds.every(id=>{
+    const row=downloads[String(id)];
+    return row?.state==="interrupted"&&SAFE_RETRY_CODES.test(String(row.error||""));
+  });
 }
 function safeSource(value){
   if(typeof value!=="string"||!value||value.length>2500||value.startsWith("/")||
@@ -32,11 +48,27 @@ function safeSource(value){
   return value;
 }
 class HarvestWorker {
-  constructor(api,utils){
-    this.api=api;this.utils=utils;this.state=empty();this.serial=Promise.resolve();this.lastPolled={};
-    this.ready=api.storage.local.get([KEY,OLD_KEY]).then(data=>{
-      const newer=data?.[KEY];
-      if(newer?.schema===SCHEMA){this.state=newer;return;}
+  constructor(api,utils,scope=null){
+    this.api=api;this.utils=utils;this.scope=scope;
+    this.safeRoot=scope?.outputRoot||SAFE_ROOT;
+    this.storageKey=scope?.harvestStorageKey||KEY;
+    this.state=empty(scope?0:1199,scope?.scopeId||null);
+    this.serial=Promise.resolve();this.lastPolled={};
+    this.ready=api.storage.local.get(scope?[this.storageKey]:[KEY,OLD_KEY]).then(data=>{
+      const newer=data?.[this.storageKey];
+      if(newer?.schema===SCHEMA&&(!scope||newer.scopeId===scope.scopeId)){
+        // v0.13 stored only a global Disk-2 capture and did not always
+        // serialize the total. Preserve its established 1199-member
+        // inventory without applying that number to any new archive.
+        if(!scope&&!Number.isInteger(newer.sourcePathsCount)){
+          newer.sourcePathsCount=1199;
+          newer.migratedFrom=newer.migratedFrom||"rr_harvest_v13-unscoped";
+        }
+        if(scope&&!Number.isInteger(newer.sourcePathsCount))
+          throw Error("Scoped capture has no recorded inventory count");
+        this.state=newer;return;
+      }
+      if(scope)return;
       const old=data?.[OLD_KEY];
       if(!old?.requests||!old?.downloads)return;
       const migrated=empty();
@@ -47,7 +79,7 @@ class HarvestWorker {
         if(!source||!source.name)continue;
         migrated.requests[path]={
           ...source,clickId:source.clickId||"legacy:"+path,
-          expectedFullPath:SAFE_ROOT+"/"+path,
+          expectedFullPath:this.safeRoot+"/"+path,
           dispatchAt:Number(source.clickedAt)||Number(source.createdAt)||0,
           clickedAt:Number(source.clickedAt)||0,
           clickConfirmedAt:Number(source.clickedAt)||0,
@@ -61,7 +93,7 @@ class HarvestWorker {
         if(!item)continue;
         migrated.downloads[id]={...item,
           downloadId:Number(item.id)||Number(id),
-          expectedFullPath:item.sourcePath?SAFE_ROOT+"/"+item.sourcePath:null,
+          expectedFullPath:item.sourcePath?this.safeRoot+"/"+item.sourcePath:null,
           actualSavedFullPath:item.actualSavedPath||null,
           serverReportedName:item.browserName||null,
           associationConfidence:item.matchConfidence||"legacy-unverified",
@@ -75,7 +107,7 @@ class HarvestWorker {
     const job=this.serial.then(async()=>{
       await this.ready;
       const result=await fn(this.state);
-      await this.api.storage.local.set({[KEY]:this.state});
+      await this.api.storage.local.set({[this.storageKey]:this.state});
       return result;
     });
     this.serial=job.catch(()=>{});
@@ -90,7 +122,7 @@ class HarvestWorker {
       (this.state.phase==="tail"&&now<this.state.tailDeadline);
   }
   sourceAllowed(item){
-    if(!this.recording()||!item||ownReport(item)||
+    if(!this.recording()||!item||ownReport(item,this.safeRoot)||
        !this.utils.isDownloadHost(item.url||item.finalUrl||""))return false;
     if(Number.isInteger(item.tabId)&&item.tabId>=0&&item.tabId!==this.state.tabId){
       let host="";
@@ -101,13 +133,17 @@ class HarvestWorker {
     return true;
   }
   async begin(tabId,total){
-    if(!Number.isInteger(tabId)||tabId<0||total!==1199)throw Error("Wrong RAR scope");
+    if(!Number.isInteger(tabId)||tabId<0||!Number.isInteger(total)||total<0||total>100000)
+      throw Error("Invalid archive member count");
     await this.ready;
     if(this.state.phase==="collecting"&&this.state.tabId!==tabId && this.api.tabs?.get){
       try{await this.api.tabs.get(this.state.tabId);throw Error("Another recovery tab is still active");}
       catch(e){if(e.message==="Another recovery tab is still active")throw e;}
     }
     return this.atomic(s=>{
+      if(this.scope&&s.scopeId!==this.scope.scopeId)throw Error("Different archive scope");
+      if(s.batchId&&s.sourcePathsCount!==total)throw Error("Archive map changed since capture began");
+      s.sourcePathsCount=total;
       if(!s.batchId){s.batchId="harvest-"+Date.now();s.createdAt=iso();}
       s.tabId=tabId;s.phase="collecting";s.startedAt=Date.now();s.tailDeadline=0;
       this.log("begin",null,"Capture resumed; 120s per source, no automatic retries");
@@ -121,24 +157,61 @@ class HarvestWorker {
       return this.summary();
     });
   }
+  async lookupFailed(folder,name,reason){
+    const path=safeSource(sourcePath(folder,name));
+    return this.atomic(s=>{
+      const r=s.requests[path];
+      if(!r||r.dispatchAt)throw Error("A row lookup cannot fail after click dispatch");
+      r.lookupAttempts=Number(r.lookupAttempts||0)+1;
+      r.state="not-clicked";
+      r.lastError=String(reason||"File row absent in viewer").slice(0,180);
+      this.log("file-not-clicked",path,r.lastError);
+      return {ok:true,state:r.state,lookupAttempts:r.lookupAttempts};
+    });
+  }
   async arm(folder,name){
     const path=safeSource(sourcePath(folder,name));
     if(!name||name.includes("/")||name.includes("\\"))throw Error("Bad basename");
     // Normalize Windows directory names through existing safe common helper.
-    const checked=this.utils.relative(folder,name);
+    const checked=this.utils.relative(folder,name,this.scope?.outputRoot||null);
     if(!checked.endsWith("/"+this.utils.component(name)))throw Error("Unsafe filename");
+    await this.ready;
+    const previous=this.state.requests[path];
+    if(previous?.state==="interrupted"){
+      for(const id of [...(previous.downloadIds||[])]){
+        const rows=await this.api.downloads.search({id});
+        if(!rows?.[0]){
+          await this.atomic(s=>{
+            s.requests[path].state="needs-review";
+            this.log("retry-history-missing",path,"Cannot prove terminal interruption");
+          });
+          return {ok:true,skipped:true,state:"needs-review",sourcePath:path};
+        }
+        await this.changed(id,rows[0]);
+      }
+    }
     return this.atomic(s=>{
       if(s.phase!=="collecting")throw Error("Capture not active");
       if(s.requests[path]){
         const previous=s.requests[path];
-        if(!isSafeToRetryLookup(previous))
+        const retryLookup=isSafeToRetryLookup(previous);
+        const retryInterrupted=isSafeToRetryInterrupted(previous,s.downloads);
+        if(!retryLookup&&!retryInterrupted)
           return {ok:true,skipped:true,sourcePath:path,state:previous.state};
-        // Only a row lookup failed; there was no viewer click/download.
-        previous.noClickHistory=[...(previous.noClickHistory||[]),{
-          clickId:previous.clickId,dispatchAt:previous.dispatchAt,
-          failedAt:previous.armedAt,reason:previous.lastError||"not visible",
-          state:"not-clicked"
-        }].slice(-30);
+        if(retryLookup){
+          previous.noClickHistory=[...(previous.noClickHistory||[]),{
+            clickId:previous.clickId,dispatchAt:previous.dispatchAt,
+            failedAt:previous.armedAt,reason:previous.lastError||"not visible",
+            state:"not-clicked"
+          }].slice(-30);
+        }else{
+          previous.retryCount=Number(previous.retryCount||0)+1;
+          previous.retryHistory=[...(previous.retryHistory||[]),{
+            clickId:previous.clickId,dispatchAt:previous.dispatchAt,
+            terminalDownloadIds:[...previous.downloadIds],
+            state:"interrupted"
+          }].slice(-MAX_TRANSFER_RETRIES);
+        }
         s.lookupRetrySeq=(Number(s.lookupRetrySeq)||0)+1;
         previous.clickId=s.batchId+":lookup-retry-"+s.lookupRetrySeq;
         previous.armedAt=Date.now();previous.dispatchAt=0;
@@ -146,12 +219,13 @@ class HarvestWorker {
         previous.deadlineAt=0;previous.timedOutAt=0;
         previous.state="armed";previous.lastError=null;
         previous.downloadIds=[];previous.observedNames=[];
-        this.log("lookup-rearmed",path,"No previous row click; safe to retry lookup");
-        return {ok:true,skipped:false,retryOfNoClick:true,
-          sourcePath:path,clickId:previous.clickId};
+        this.log(retryLookup?"lookup-rearmed":"transfer-retried",path,
+          retryLookup?"Previous click never happened":"Confirmed terminal interruption");
+        return {ok:true,skipped:false,retryOfNoClick:retryLookup,
+          retryOfInterrupted:retryInterrupted,sourcePath:path,clickId:previous.clickId};
       }
       const id=s.batchId+":"+(Object.keys(s.requests).length+1);
-      s.requests[path]={sourcePath:path,expectedFullPath:SAFE_ROOT+"/"+path,
+      s.requests[path]={sourcePath:path,expectedFullPath:this.safeRoot+"/"+path,
         folder,name,clickId:id,armedAt:Date.now(),dispatchAt:0,clickedAt:0,
         clickConfirmedAt:0,deadlineAt:0,timedOutAt:0,state:"armed",downloadIds:[],
         observedNames:[],lastError:null};
@@ -221,7 +295,7 @@ class HarvestWorker {
   }
   async determine(item){
     return this.atomic(s=>{
-      if(ownReport(item)){
+      if(ownReport(item,this.safeRoot)){
         // The JSON report is also downloaded from a blob:disk.yandex.ru URL.
         // It is NOT an archive member, never count/relocate it.
         delete s.downloads[String(item.id)];
@@ -236,7 +310,7 @@ class HarvestWorker {
       // Archive root is the only fallback for genuinely unattributable data.
       // Never add a special subfolder or rename server-returned basenames.
       const parts=r?.folder?r.folder.split("/").map(this.utils.component):[];
-      const relative=[SAFE_ROOT,...parts,this.utils.component(actualName)].join("/");
+      const relative=[this.safeRoot,...parts,this.utils.component(actualName)].join("/");
       const event={...(old||{}),downloadId:item.id,
         createdAt:old?.createdAt||iso(),createdTimeMs:old?.createdTimeMs||Date.now(),
         sourcePath:r?.sourcePath||null,expectedFullPath:r?.expectedFullPath||null,
@@ -269,7 +343,7 @@ class HarvestWorker {
       // user-requested JSON report (never sent to a remote endpoint).
       row.actualSavedFullPath=String(item.filename||"")||row.actualSavedFullPath;
       const full=normPath(row.actualSavedFullPath);
-      const marker="/"+SAFE_ROOT+"/";
+      const marker="/"+this.safeRoot+"/";
       const idx=full.toLowerCase().lastIndexOf(marker.toLowerCase());
       row.actualSavedRelativePath=idx>=0?full.slice(idx+1):basename(full);
       row.actualBrowserName=basename(item.filename)||row.serverReportedName;
@@ -279,12 +353,17 @@ class HarvestWorker {
       if(item.state==="complete"||item.state==="interrupted"){
         if(!row.completedAt)row.completedAt=iso();
         const r=row.sourcePath?s.requests[row.sourcePath]:null;
-        if(r){
+        // A late duplicate event from an earlier retry attempt may update
+        // that attempt's evidence, but must NEVER replace the current
+        // source state after a newer download completed.
+        const isCurrent=!!r&&Array.isArray(r.downloadIds)&&r.downloadIds.includes(id);
+        if(isCurrent){
           r.state=item.state==="complete"?"complete":"interrupted";
           r.finalDownloadId=id;
           r.completedAt=row.completedAt;
         }
-        this.log("download-"+item.state,row.sourcePath,
+        this.log(isCurrent?"download-"+item.state:"historical-download-"+item.state,
+          row.sourcePath,
           "id="+id+" expected="+(row.expectedFullPath||"unknown")+
           " actual="+(row.actualSavedFullPath||"missing"));
       }
@@ -328,20 +407,47 @@ class HarvestWorker {
     return {ok:true,state:"waiting",remainingMs:Math.max(0,req.deadlineAt-Date.now()),
       downloadIds:[...req.downloadIds]};
   }
+  // A scope-specific plan does not need the browser's entire download
+  // session registry, old legacy log, or a mutable HarvestWorker instance.
+  // This also prevents a blocked unrelated capture from freezing startup.
+  static planFromState(state,scopeId){
+    if(!state)return {ok:true,total:0,processedSourcePaths:[],retryableSourcePaths:[]};
+    if(state.schema!==SCHEMA||state.scopeId!==scopeId||
+       !state.requests||typeof state.requests!=="object"||
+       !state.downloads||typeof state.downloads!=="object"||
+       !Number.isInteger(state.sourcePathsCount)||
+       state.sourcePathsCount<0||state.sourcePathsCount>100000)
+      throw Error("Stored archive download journal is inconsistent; no new clicks allowed");
+    const rows=Object.values(state.requests);
+    return {ok:true,total:state.sourcePathsCount,
+      processedSourcePaths:rows.map(row=>row.sourcePath),
+      retryableSourcePaths:rows.filter(row=>isSafeToRetryLookup(row)||
+        isSafeToRetryInterrupted(row,state.downloads)).map(row=>row.sourcePath)};
+  }
+  async plan(){
+    await this.ready;await this.serial;
+    return HarvestWorker.planFromState(this.state,this.scope?.scopeId||null);
+  }
   async status(){await this.ready;await this.serial;return this.summary();}
   summary(){
     const requests=Object.values(this.state.requests);
     // Exclude the v0.12 extension-generated JSON report from archive counts.
     const rows=Object.values(this.state.downloads).filter(row=>
-      !ownReport({filename:row.serverReportedName||row.browserName||row.actualBrowserName||""}));
+      !ownReport({filename:row.serverReportedName||row.browserName||row.actualBrowserName||""},this.safeRoot));
     return {ok:true,phase:this.state.phase,batchId:this.state.batchId,
-      total:1199,requested:requests.length,
-      clickDispatchCount:requests.filter(r=>Number(r.dispatchAt)>0).length,
+      total:this.state.sourcePathsCount,requested:requests.length,
+      clickDispatchCount:requests.reduce((n,r)=>n+(Number(r.dispatchAt)>0?1:0)+
+        (r.retryHistory?.length||0),0),
       clickDispatchAttempts:requests.reduce((sum,r)=>sum+
-        (Number(r.dispatchAt)>0?1:0)+(r.noClickHistory?.length||0),0),
+        (Number(r.dispatchAt)>0?1:0)+(r.noClickHistory?.length||0)+
+        (r.retryHistory?.length||0),0),
       notClickedCount:requests.filter(r=>r.state==="not-clicked").length,
       safeToRetryLookupCount:requests.filter(isSafeToRetryLookup).length,
-      clickCount:requests.filter(r=>Number(r.clickConfirmedAt)>0).length,
+      retryableCount:requests.filter(r=>isSafeToRetryLookup(r)||
+        isSafeToRetryInterrupted(r,this.state.downloads)).length,
+      retryClickCount:requests.reduce((n,r)=>n+Number(r.retryCount||0),0),
+      clickCount:requests.reduce((n,r)=>n+(Number(r.clickConfirmedAt)>0?1:0)+
+        (r.retryHistory?.length||0),0),
       downloadStartedCount:rows.length,
       downloadCompletedCount:rows.filter(r=>r.state==="complete").length,
       downloadInterruptedCount:rows.filter(r=>r.state==="interrupted").length,
@@ -355,6 +461,10 @@ class HarvestWorker {
   }
   async report(){await this.ready;await this.serial;
     return {ok:true,...JSON.parse(JSON.stringify(this.state)),
+      retryableSourcePaths:Object.values(this.state.requests)
+        .filter(r=>isSafeToRetryLookup(r)||
+          isSafeToRetryInterrupted(r,this.state.downloads))
+        .map(r=>r.sourcePath),
       exportedAt:iso(),summary:this.summary(),
       note:"Names and full paths are recorded as received. Source attribution for delayed downloads is probabilistic; timeout is not a failure or permission to re-click."};
   }

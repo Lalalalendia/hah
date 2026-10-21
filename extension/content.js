@@ -5,13 +5,14 @@
   const LEDGER_KEY = "rr_ledger";
   const NESTED_PILOT_LIMIT = 2;
   const TREE_KEY = "rr_tree_v05";
-  const EXPECTED_OBJECTS = 1286;
+  const EXPECTED_OBJECTS = 1286; // legacy-only diagnostic
+  const MAX_CRAWL_EVENTS = 100000;
   const ARCHIVE = "Disk-2.rar";
   const sleep = ms => new Promise(resolve => setTimeout(resolve,ms));
   let panel = null, folder = "", frames = new Map(), scanId = "", scanning = false;
   let approved = null, pending = null, running = false, stopRequested = false;
   let events = [], downloaded = 0, failed = 0;
-  let notice = "Используем названия файлов и кнопки на скриншотах DevTools.";
+  let notice = "Ищу открытый RAR в веб-просмотрщике Яндекс Диска.";
   let progress = "";
   let lastInspection = [];
   let nativeVerified = false;
@@ -24,6 +25,92 @@
   let treeFrame = null;
   let harvestSummary = null;
   let harvestLoopActive = false;
+  let harvestStage="idle"; // preparing, collecting, finishing; no fictitious file click
+  const harvestWake=new RarRescueHarvestWake();
+  let harvestWaitingSource=null;
+  let scope = null;
+  function archiveRoot(){return scope?.outputRoot||ARCHIVE;}
+  let verifiedViewerTitle=null;
+  function archiveTitleResolution(){
+    const viewer=String(bestFrame()?.archiveName||"").trim();
+    const meta=document.querySelector('meta[property="og:title"]')?.content||
+      document.querySelector('meta[name="twitter:title"]')?.content||"";
+    const fingerprint=RarRescueArchiveScope.viewerFingerprint(bestFrame());
+    const resolved=RarRescueArchiveScope.resolveName(location.href,[
+      {source:"viewer",value:viewer},
+      {source:"metadata",value:meta},
+      {source:"page",value:String(document.title||"")}
+    ],fingerprint);
+    return {...resolved,fingerprint};
+  }
+  // The output folder is already reserved on a resumed capture. Verifying
+  // the persisted owner is a read-only lookup and needs no MV3 round trip.
+  // Only NEW roots must pass through the single-writer background broker.
+  async function ensureOutputRoot(detected){
+    const key="rr_output_owners_v15";
+    const root=detected.outputRoot.normalize("NFC").toLowerCase();
+    let owners;
+    try{
+      const read=await chrome.storage.local.get(key);
+      owners=read?.[key];
+    }catch(error){
+      throw Error("Не удалось проверить ранее закреплённую папку: "+
+        String(error?.message||error).slice(0,120));
+    }
+    if(owners&&Object.prototype.hasOwnProperty.call(owners,root)){
+      if(owners[root]!==detected.scopeId)
+        throw Error("Папка выгрузки уже закреплена за другим архивом; файлы не смешиваются");
+      // Already committed for THIS exact scope by the background owner map.
+      // A non-mutating resume must not wait for a stopped service worker.
+      return {existing:true};
+    }
+    // Never bypass the single-writer collision gate for an unreserved root.
+    // The service worker may die after committing: reconcile its persisted
+    // result once, read-only, rather than issuing a duplicate reservation.
+    try{
+      await send({kind:"RR_RESERVE_OUTPUT_ROOT",scope:detected});
+    }catch(error){
+      const after=(await chrome.storage.local.get(key))?.[key]||{};
+      if(after[root]!==detected.scopeId)throw error;
+    }
+    return {existing:false};
+  }
+  async function ensureArchiveScope(){
+    const resolved=archiveTitleResolution();
+    const detected=RarRescueArchiveScope.fromYandexViewer(
+      location.href,resolved.archiveName,resolved.fingerprint);
+    // A real previous click ledger + complete root manifest prove which
+    // existing archive this viewer belongs to. Reuse that exact identity,
+    // destination and all prior download IDs. Do not create a new scope based
+    // solely on a changing Yandex archive title.
+    const previous=await RarRescueResume.find(chrome.storage.local,
+      RarRescueArchiveScope,location.href,bestFrame(),detected);
+    if(previous){
+      if(scope&&!RarRescueArchiveScope.sameScope(scope,previous.scope))
+        throw Error("Открытый архив изменился во время восстановления");
+      scope=previous.scope;
+      tree=previous.tree;
+      verifiedViewerTitle=null;
+      show("Восстановлен исходный журнал: "+previous.processed+
+        " обработанных файлов. Использую прежнюю папку без регистрации.");
+      return scope;
+    }
+    if(scope&&!RarRescueArchiveScope.sameScope(scope,detected))
+      throw Error("The active archive changed during recovery");
+    const reservation=await ensureOutputRoot(detected);
+    if(reservation.existing)
+      show("Возобновляю уже закреплённую папку этого архива; новый запрос регистрации не нужен.");
+    scope=detected;
+    verifiedViewerTitle=resolved.viewerExpectedTitle;
+    if(resolved.fallback)show("Яндекс не передал имя архива. Использую папку "+
+      resolved.archiveName+" (по адресу и содержимому веб-просмотрщика); исходные имена файлов сохраняются.");
+    if(!tree){
+      const store=await chrome.storage.local.get(scope.treeStorageKey);
+      const saved=store[scope.treeStorageKey];
+      if(saved?.scopeId===scope.scopeId)tree=saved;
+    }
+    return scope;
+  }
 
   function show(message) {
     events.unshift(new Date().toLocaleTimeString() + " " + message);
@@ -32,12 +119,52 @@
   }
   const el = id => panel && panel.querySelector("#"+id);
   async function send(message) {
-    const response = await chrome.runtime.sendMessage(message);
-    if (!response || !response.ok) throw new Error(response?.error || "Расширение не ответило");
+    if(scope&&message?.kind?.startsWith("RR_HARVEST_")&&!message.scope)
+      message={...message,scope};
+    const stage=String(message.kind||"unknown")+
+      (message.kind==="RR_FRAME_CALL"?"/"+String(message.payload?.kind||"unknown"):"");
+    const started=Date.now();
+    let response;
+    try{
+      const deadline={
+        RR_RESERVE_OUTPUT_ROOT:15000,RR_HARVEST_PLAN:20000,
+        RR_HARVEST_BEGIN:60000
+      }[message.kind];
+      if(!deadline)response=await chrome.runtime.sendMessage(message);
+      else {
+        // Best-effort page deadline: Chrome can throttle a frozen page, but
+        // the UI should not silently wait through normal worker failures.
+        let timer;
+        try{
+          response=await Promise.race([
+            chrome.runtime.sendMessage(message),
+            new Promise((_,reject)=>{timer=setTimeout(()=>reject(
+              Error("Нет ответа от "+stage+" за "+Math.round(deadline/1000)+
+                " секунд. Команда не повторялась.")),deadline);})
+          ]);
+        }finally{if(timer!==undefined)clearTimeout(timer);}
+      }
+    }
+    catch(error){
+      const detail=String(error?.message||error);
+      const elapsed=Math.round((Date.now()-started)/1000);
+      throw new Error(/message channel closed|Receiving end does not exist|Could not establish connection/i.test(detail)?
+        "Канал расширения оборвался на "+stage+" спустя "+elapsed+
+        " с. Команда не будет автоматически повторена; уже учтённые файлы сохранены.":
+        "Ошибка "+stage+": "+detail);
+    }
+    if(!response?.ok)throw new Error(response?.error||"Нет ответа на "+stage);
     return response;
   }
-  async function inFrame(id,payload) {
-    return send({kind:"RR_FRAME_CALL",frameId:id,payload});
+  let viewerFrameAlias=null;
+  async function inFrame(id,payload){
+    const target=viewerFrameAlias??id;
+    const result=await send({kind:"RR_FRAME_CALL",frameId:target,payload});
+    if(Number.isInteger(result.viewerFrameId)&&result.viewerFrameId!==target){
+      viewerFrameAlias=result.viewerFrameId;
+      show("Связь с веб-просмотрщиком восстановлена; найден активный iframe.");
+    }
+    return result;
   }
   function folderValue() {
     const value = String(el("rr-folder")?.value || "").trim().replace(/\\/g,"/");
@@ -54,8 +181,11 @@
     return state;
   }
   function bestFrame() {
-    const sorted = [...frames.values()].filter(x => x.count > 0)
-      .sort((a,b) => b.count - a.count);
+    const sorted = [...frames.values()].filter(x =>
+      Number.isFinite(Number(x.count))&&Number.isFinite(Number(x.folders))&&
+      (x.host==="docviewer.yandex.ru"||x.host==="docviewer.360.yandex.ru"||
+       Boolean(x.archiveName)))
+      .sort((a,b) => (b.count+b.folders)-(a.count+a.folders));
     return sorted[0] || null;
   }
   function render() {
@@ -66,9 +196,13 @@
     const candidateUnknown = bestFrame()?.unknown || 0;
     const best = bestFrame();
     if(el("rr-harvest")){
-      el("rr-harvest").textContent=harvestLoopActive ? "Остановить после текущего файла" :
-        "Скачать всё";
-      el("rr-harvest").disabled=scanning || (running&&!harvestLoopActive);
+      el("rr-harvest").textContent=harvestLoopActive ?
+        (harvestStage==="collecting"?"Остановить после текущего файла":
+          harvestStage==="finishing"?"Завершаю сеанс":"Отменить подготовку") :
+        scanning ? "Повторить поиск файлов" : best ? "Скачать всё" : "Найти файлы RAR";
+      // Search is read-only: never lock the only button just because a
+      // scan acknowledgment from the background worker has stalled.
+      el("rr-harvest").disabled=running&&!harvestLoopActive;
     }
     if(el("rr-harvest-count")){
       const h=harvestSummary;
@@ -79,6 +213,7 @@
         " · тайм-аутов (120 с): "+h.timedOutCount+
         " · расхождений: "+h.mismatchCount+
         " · без привязки: "+h.unmatchedDownloadCount+
+         " · повторов: "+(h.retryClickCount||0)+
         " · не нажато: "+h.notClickedCount+" · можно повторить: "+h.safeToRetryLookupCount+" · позиций учтено: "+h.requested+"/"+h.total) :
         "Один клик на файл; ожидание до 120 секунд. Сохраняются исходные каталоги и реальные имена Яндекса.";
     }
@@ -89,10 +224,11 @@
       ("Файлы не обнаружены. Ответили кадров: "+entries.length));
     if (el("rr-found")) el("rr-found").textContent = best ?
       "Примеры: "+(best.names || []).slice(0,10).join(", ") :
-      "Нужно открыть содержимое Диск 2.rar и нажать «Найти файлы».";
+      "Открой веб-просмотрщик RAR и нажми «Скачать всё».";
     if (el("rr-progress")) el("rr-progress").textContent = (progress ? progress+" · " : "") +
       notice; // Old strict-ledger counts must not masquerade as new verified downloads.
-    if (el("rr-log")) el("rr-log").textContent = events.slice(0,9).join("\n") || "Ожидаю проверки.";
+    if (el("rr-log")) el("rr-log").textContent = events.slice(0,9).join("\n") ||
+      "Ищу файлы открытого RAR. Подтверждение от пользователя не требуется.";
     if (el("rr-resume-status")){
       const p=tree?.complete ? RarRescuePlan.pendingDirectories(tree,ledgerSnapshot) : null;
       el("rr-resume-status").textContent = p?.ok ?
@@ -148,8 +284,8 @@
     panel=document.createElement("section");
     panel.id="rr-recovery-panel";
     panel.innerHTML=[
-      '<header><strong>RAR Rescue v0.14</strong><button id="rr-close" title="Закрыть">×</button></header>',
-      '<p>Диск 2.rar · автоматическая выгрузка всех доступных файлов.</p>',
+      '<header><strong>RAR Rescue</strong><button id="rr-close" title="Закрыть">×</button></header>',
+      '<p>Автоматический обход архива, загрузка и возобновление.</p>',
       '<div class="rr-actions"><button id="rr-harvest">Скачать всё</button></div>',
       '<p id="rr-harvest-count"></p>',
       '<p id="rr-progress" role="status"></p>',
@@ -160,6 +296,7 @@
     el("rr-close").addEventListener("click",()=>{panel.remove();panel=null;});
     el("rr-harvest").addEventListener("click",()=>{
       if(harvestLoopActive){stopRequested=true;show("Остановка после текущего запроса.");}
+      else if(scanning||!bestFrame())void scan();
       else void harvestAll();
     });
     render();
@@ -167,17 +304,40 @@
   }
 
   async function scan() {
+    viewerFrameAlias=null;
     if (running) return;
-    frames.clear();scanId=String(Date.now())+"-"+Math.random().toString(36).slice(2);
-    scanning=true;approved=null;render();
-    try { await send({kind:"RR_SCAN_FRAMES",requestId:scanId}); }
-    catch(error) { notice="Ошибка сканирования: "+error.message;show(notice); }
-    await sleep(1800);
+    frames.clear();
+    const requestId=String(Date.now())+"-"+Math.random().toString(36).slice(2);
+    scanId=requestId;
+    scanning=true;approved=null;
+    show("Ищу файлы открытого RAR. Если поиск завис — нажми «Повторить поиск файлов».");
+    let scanError="";
+    let timer=null;
+    try {
+      // A stalled MV3 response channel must not keep the one-click UI
+      // blocked for the full 45-second background guard. Sensor reports
+      // arrive as independent events and remain valid after this deadline.
+      await Promise.race([
+        send({kind:"RR_SCAN_FRAMES",requestId}),
+        new Promise((_,reject)=>{
+          timer=setTimeout(()=>reject(Error("Веб-просмотрщик не ответил за 6 секунд")),6000);
+        })
+      ]);
+    }catch(error){
+      scanError=String(error?.message||error).slice(0,180);
+    }finally{
+      if(timer!==null)clearTimeout(timer);
+    }
+    await sleep(1200);
+    if(scanId!==requestId)return; // A newer manual scan superseded this one.
     scanning=false;
     const best=bestFrame();
     notice=best ?
-      ("Обнаружено "+best.count+" файлов в корне Яндекс RAR. Для начала нажми «Скачать всё».") :
-      "Список файлов не получен. Проверь доступ расширения к встроенному docviewer и обнови страницу.";
+      ("Найден веб-просмотрщик RAR: "+best.count+" файлов, "+best.folders+
+       " папок. Нажми «Скачать всё», чтобы продолжить сохранённую очередь.") :
+      ("Файлы RAR не обнаружены"+(scanError?": "+scanError:"")+
+       ". Открой архив в просмотрщике и нажми «Найти файлы RAR». "+
+       "Журнал предыдущих загрузок сохранён.");
     show(notice);
   }
 
@@ -446,38 +606,54 @@
   async function saveTree() {
     if(!tree)return;
     tree.updatedAt=new Date().toISOString();
-    await chrome.storage.local.set({[TREE_KEY]:tree});
+    if(!scope)throw Error("Archive scope is unknown");
+    await chrome.storage.local.set({[scope.treeStorageKey]:tree});
     render();
   }
 
   function newTree() {
     return {
-      schema:"rar-rescue-tree-v1",
-      archive:"Диск 2.rar",
-      expectedObjects:EXPECTED_OBJECTS,
+      schema:"rar-rescue-tree-v2",
+      scopeId:scope.scopeId,archive:scope.archiveName,
+      expectedObjects:null,
       createdAt:new Date().toISOString(),
       scanned:false,complete:false,observedObjects:0,
-      directories:{},files:{},unknown:[],issues:[]
+      directories:Object.create(null),files:Object.create(null),
+      completedSubtrees:[],unknown:[],issues:[]
     };
   }
 
   function storeDirectory(event) {
     if(!tree || !event || event.event!=="directory")throw new Error("Invalid directory scan event");
     const path=String(event.path||"");
-    if(Object.prototype.hasOwnProperty.call(tree.directories,path)) {
-      tree.issues.push({path,reason:"duplicate-directory-visit"});
-      return;
-    }
+    const safePart=value=>typeof value==="string"&&
+      value.length>0&&value.length<=200&&
+      ![".","..","__proto__","prototype","constructor"].includes(value.toLowerCase())&&
+      !/[/\\\\\u0000-\u001f]/.test(value);
+    if(path&&path.split("/").some(part=>!safePart(part)))
+      throw new Error("Unsafe archive directory identifier");
     const items=event.items||[];
+    if(Object.prototype.hasOwnProperty.call(tree.directories,path)) {
+      const prior=tree.directories[path].entries||[];
+      const normalize=rows=>rows.map(x=>x.kind+"|"+x.name).sort().join("\n");
+      if(normalize(prior)!==normalize(items))
+        throw new Error("Checkpoint directory changed: "+path);
+      tree.observedObjects=Number(event.discoveredObjects)||tree.observedObjects;
+      return; // The same directory is revalidated, not double-counted.
+    }
     tree.directories[path]={
       path,entries:items.map(i=>({name:i.name,kind:i.kind})),
       empty:items.length===0,scannedAt:new Date().toISOString()
     };
     for(const row of items){
       const source=(path?path+"/":"")+row.name;
+      if(!safePart(row.name)){
+        tree.issues.push({path:source,reason:"unsafe-entry-name"});
+        continue;
+      }
       if(row.kind==="file") {
         let destination;
-        try {destination=RarRescueUtils.relative(path,row.name);}
+        try {destination=RarRescueUtils.relative(path,row.name,archiveRoot());}
         catch(error) {
           tree.issues.push({path:source,reason:"invalid-output-path"});
           continue;
@@ -502,7 +678,13 @@
 
   function finalizeTree(event){
     tree.scanned=true;
-    tree.observedObjects=Number(event.objects)||tree.observedObjects;
+    const expectedObjects=Object.values(tree.directories)
+      .reduce((n,dir)=>n+(dir.entries||[]).length,0);
+    const expectedPaths=Object.keys(tree.directories).length;
+    if(Number(event.objects)!==expectedObjects||Number(event.paths)!==expectedPaths)
+      tree.issues.push({path:"",reason:"checkpoint-count-mismatch",
+        expectedObjects,expectedPaths,actualObjects:event.objects,actualPaths:event.paths});
+    tree.observedObjects=expectedObjects;
     const reserved=new Map();
     for(const [source,record] of Object.entries(tree.files)){
       const dest=record.destination.toLowerCase();
@@ -516,60 +698,159 @@
     for(const path of Object.keys(tree.directories)){
       if(!path)continue;
       let target;
-      try {target=RarRescueUtils.relative(path,"_directory_marker_").toLowerCase();}
+      try {target=RarRescueUtils.relative(path,"_directory_marker_",archiveRoot()).toLowerCase();}
       catch(_){tree.issues.push({path,reason:"unsafe-directory-name"});continue;}
       if(mappedDirs.has(target)&&mappedDirs.get(target)!==path) {
         tree.issues.push({path,reason:"directory-name-collision",
           collidesWith:mappedDirs.get(target)});
       } else mappedDirs.set(target,path);
     }
-    tree.complete=tree.observedObjects===EXPECTED_OBJECTS &&
-      tree.unknown.length===0 && tree.issues.length===0;
+    tree.expectedObjects=tree.observedObjects;
+    tree.complete=tree.unknown.length===0&&tree.issues.length===0;
+    if(tree.complete){
+      try{RarRescueManifest.importManifest(tree,RarRescueUtils,scope);}
+      catch(error){
+        tree.complete=false;
+        tree.issues.push({path:"",reason:"structural-integrity",
+          detail:String(error.message||error).slice(0,180)});
+      }
+    }
   }
 
+  async function inventoryPass(frameId,checkpoint){
+    let item=await inFrame(frameId,{
+      kind:"RR_SENSOR_CRAWL_BEGIN",archiveName:verifiedViewerTitle,checkpoint
+    });
+    if(!item.ok)throw new Error(item.error||"Не удалось подтвердить корень архива");
+    storeDirectory(item);await saveTree();
+    for(let iteration=0;iteration<MAX_CRAWL_EVENTS&&!stopRequested;iteration++){
+      item=await inFrame(frameId,{kind:"RR_SENSOR_CRAWL_STEP"});
+      if(!item.ok)throw new Error((item.path||"")+" "+(item.error||"Ошибка навигации"));
+      if(item.event==="complete"){
+        finalizeTree(item);
+        await saveTree();
+        notice=tree.complete?
+          "Карта готова: "+Object.keys(tree.files).length+" файлов и "+
+            (Object.keys(tree.directories).length-1)+" папок.":
+          "Обход закончился, но есть неподтверждённые элементы: "+
+            tree.unknown.length+" неизвестных, "+tree.issues.length+" ошибок.";
+        show(notice);
+        return true;
+      }
+      if(item.event==="directory"){
+        storeDirectory(item);await saveTree();
+        progress="Обход: "+(item.path||"[корень]")+
+          " · объектов: "+tree.observedObjects;
+        render();
+      }
+      if(item.event==="returned"){
+        const closed=String(item.completedPath||"");
+        if(!closed||!Object.prototype.hasOwnProperty.call(tree.directories,closed))
+          throw new Error("Crawler returned an unknown completed folder");
+        if(!tree.completedSubtrees.includes(closed)){
+          tree.completedSubtrees.push(closed);
+          await saveTree();
+        }
+      }
+      if(item.event==="skipped"){
+        progress="Продолжение: пропущена уже пройденная ветка "+item.path;
+        render();
+      }
+      if(iteration===MAX_CRAWL_EVENTS-1)
+        throw new Error("Превышен технический предел шагов обхода");
+    }
+    notice="Обход приостановлен. Завершённые ветки сохранены для продолжения.";
+    show(notice);
+    return false;
+  }
+
+  // Older betas stored partial directories without completion markers.
+  // Recheck these rows instead of guessing which legacy folders were complete.
+  function canResumeTree(){
+    if(!tree||tree.schema!=="rar-rescue-tree-v2"||tree.scopeId!==scope.scopeId||
+       tree.complete||tree.scanned||!tree.directories||
+       !Object.prototype.hasOwnProperty.call(tree.directories,""))return false;
+    if(!Array.isArray(tree.completedSubtrees))tree.completedSubtrees=[];
+    return !(tree.unknown||[]).length&&
+      !(tree.issues||[]).some(row=>row.reason!=="crawl-interrupted");
+  }
+  function recoverableCrawlError(message){
+    // Never repeat a potentially successful click. Read-only viewer restarts
+    // require a checkpoint-verified CRAWL_BEGIN before any next folder entry.
+    return /Receiving end does not exist|Could not establish connection|No frame with id|frame was removed|viewer disconnected|Viewer did not respond|viewer was replaced|Viewer stopped responding|folder-row-not-visible/i.test(message);
+  }
   async function inventoryTree(){
     if(running)return;
     const frame=bestFrame();
     if(!frame){notice="Открой корень архива и найди файлы.";show(notice);return;}
+    if(!scope)throw Error("Archive scope is unknown");
     running=true;stopRequested=false;treePhase="inventory";treeFrame=frame.frameId;
-    tree=newTree();await saveTree();
-    notice="Строю дерево папок. Не переключай папки вручную во время обхода.";
-    show(notice);
-    try {
-      let item=await inFrame(frame.frameId,{kind:"RR_SENSOR_CRAWL_BEGIN"});
-      if(!item.ok)throw new Error(item.error||"Не удалось подтвердить корень архива");
-      storeDirectory(item);await saveTree();
-      for(let iteration=0;iteration<EXPECTED_OBJECTS*3 && !stopRequested;iteration++){
-        item=await inFrame(frame.frameId,{kind:"RR_SENSOR_CRAWL_STEP"});
-        if(!item.ok)throw new Error((item.path||"")+" "+(item.error||"Ошибка навигации"));
-        if(item.event==="complete") {
-          finalizeTree(item);
-          await saveTree();
-          notice=tree.complete ?
-            "Все "+EXPECTED_OBJECTS+" объектов учтены. Можно запускать загрузку с исходной структурой." :
-            "Обход завершён, но состав архива не подтверждён полностью. Проверь отчёт: "+
-            tree.observedObjects+"/"+EXPECTED_OBJECTS+", неизвестных: "+
-            tree.unknown.length+", ошибок: "+tree.issues.length+".";
-          show(notice);return;
+    let resumeAttempt=0,cleanRebuild=0;
+    let useCheckpoint=canResumeTree();
+    try{
+      for(let attempt=0;attempt<4&&!stopRequested;attempt++){
+        const restoring=useCheckpoint&&canResumeTree();
+        const previousTree=tree;
+        if(restoring){
+          tree.directories=Object.assign(Object.create(null),tree.directories);
+          tree.files=Object.assign(Object.create(null),tree.files);
+          tree.issues=[];
+        }else tree=newTree();
+        const checkpoint=restoring?{
+          directories:tree.directories,completedSubtrees:tree.completedSubtrees
+        }:null;
+        show(restoring?
+          "Продолжаю сохранённую карту: завершённые папки пропускаются.":
+          "Обхожу дерево папок с корня RAR.");
+        // Save only after BEGIN verifies the viewer root. A disconnected new
+        // scan cannot overwrite an old checkpoint with an empty manifest.
+        try{
+          await inventoryPass(frame.frameId,checkpoint);
+          return;
+        }catch(error){
+          const message=String(error.message||error);
+          const hasRoot=Object.prototype.hasOwnProperty.call(tree.directories||{},"");
+          if(!hasRoot&&previousTree&&previousTree!==tree)
+            tree=previousTree;
+          if(stopRequested)break;
+          if(restoring&&/checkpoint[- ]directory[- ]changed/i.test(message)){
+            if(cleanRebuild>=1)throw error;
+            cleanRebuild++;
+            useCheckpoint=false;
+            show("Структура архива изменилась; перепроверяю корень и строю новую карту.");
+            await sleep(600);
+            continue;
+          }
+          if(recoverableCrawlError(message)&&resumeAttempt<2){
+            resumeAttempt++;
+            useCheckpoint=canResumeTree();
+            show("Временный сбой обхода: "+message.slice(0,120)+
+              ". Переподключаю просмотрщик и продолжаю карту ("+resumeAttempt+"/2).");
+            await sleep(resumeAttempt*1200);
+            continue;
+          }
+          throw error;
         }
-        if(item.event==="directory"){
-          storeDirectory(item);await saveTree();
-          progress="Обход: "+(item.path||"[корень]")+
-            " · объектов: "+tree.observedObjects+"/"+EXPECTED_OBJECTS;
-          render();
-        }
-        if(iteration===EXPECTED_OBJECTS*3-1)throw new Error("Превышен лимит этапов обхода");
       }
-      notice="Обход прерван. Карта сохранена частично. Для нового запуска вернись в корень RAR.";
-      show(notice);
-    } catch(error) {
-      tree.issues.push({path:"",reason:"crawl-interrupted",detail:String(error.message||error).slice(0,200)});
+      if(stopRequested){
+        show("Обход остановлен. Карта сохранена, продолжу с незавершённых папок.");
+        return;
+      }
+      throw Error("Не удалось завершить обход после ограниченного числа попыток");
+    }catch(error){
+      if(!tree)tree=newTree();
+      tree.issues.push({path:"",reason:"crawl-interrupted",
+        detail:String(error.message||error).slice(0,200)});
       await saveTree();
-      notice="Остановлено: "+error.message+
-        ". Частичная карта сохранена. Вернись в корень архива.";
+      const detail=String(error.message||error);
+      notice=/archive-root-unverified/i.test(detail)?
+        "Не удалось подтвердить корень архива. Вернись в корень RAR и нажми «Скачать всё» ещё раз. Карта сохранена.":
+        "Обход приостановлен: "+detail+
+          ". Завершённые ветки сохранены; повтори запуск в корне RAR.";
       show(notice);
-    } finally {
-      running=false;stopRequested=false;progress="";treePhase="";treeFrame=null;render();
+    }finally{
+      running=false;stopRequested=false;progress="";treePhase="";treeFrame=null;
+      render();
     }
   }
 
@@ -585,7 +866,7 @@
   }
   async function beginKnownPathNavigation(frameId){
     const nav=await inFrame(frameId,{kind:"RR_SENSOR_NAV_START",
-      directories:directoryManifestForNavigator()});
+      directories:directoryManifestForNavigator(),archiveName:verifiedViewerTitle});
     if(!nav.ok)throw new Error(nav.error||"Не удалось подтвердить корень");
     show("Адресная навигация: проверен корень; ненужные каталоги обходиться не будут.");
     return nav;
@@ -765,18 +1046,20 @@
   }
 
   async function exportAutomaticHarvestReport(){
-    const report=await send({kind:"RR_HARVEST_REPORT"});
+    const report=await send({kind:"RR_HARVEST_REPORT",scope});
     const ledger=(await chrome.storage.local.get(LEDGER_KEY))[LEDGER_KEY]||{};
     const legacy=Object.entries(ledger)
-      .filter(([path])=>path.startsWith("Disk-2.rar/"))
+      .filter(([path])=>scope?.sourceKey==="yandex-public:/d/_RSlWomRWmty1w"&&path.startsWith("Disk-2.rar/"))
       .map(([path,item])=>({
         sourcePath:path.slice("Disk-2.rar/".length),
         state:item.state,bytes:Number(item.bytes)||0,
         reason:String(item.reason||"").slice(0,160)
       }));
+    const diagnostics=(await chrome.storage.local.get("rr_last_command_failure_v1"))
+      .rr_last_command_failure_v1||null;
     const merged={
-      ...report,
-      archive:"Диск 2.rar",
+      ...report,transportDiagnostic:diagnostics,
+      archive:scope?.archiveName||null,scopeId:scope?.scopeId||null,
       sourceManifest:{objects:tree?.observedObjects||null,
         files:Object.keys(tree?.files||{}).length,
         directories:Object.keys(tree?.directories||{}).length,
@@ -787,7 +1070,7 @@
     const uri=URL.createObjectURL(new Blob([JSON.stringify(merged,null,2)],
       {type:"application/json;charset=utf-8"}));
     const link=document.createElement("a");
-    link.href=uri;link.download="Disk-2.rar-download-log.json";
+    link.href=uri;link.download=scope?.reportName||"RAR-Rescue-download-log.json";
     document.body.append(link);link.click();link.remove();
     setTimeout(()=>URL.revokeObjectURL(uri),30000);
   }
@@ -796,38 +1079,44 @@
     if(harvestLoopActive)return;
     if(running)return;
     harvestLoopActive=true;
+    harvestStage="preparing";
     stopRequested=false;
-    render();
+    const stage=message=>{progress=message;show(message);};
+    const checkStop=()=>{
+      if(stopRequested)throw Error("Подготовка отменена без скачивания; журнал сохранён");
+    };
+    stage("Подготовка: проверяю открытый архив. Скачивание ещё не началось.");
     let captureBegun=false;
     let clicked=0,skipped=0,failedActions=0;
     try{
-      // All discovery and inventory work happens within this one button.
+      // No message about a clicked file until a real browser action occurs.
       if(!bestFrame())await scan();
+      checkStop();
+      stage("Подготовка: подтверждаю архив и выходную папку (без кликов).");
+      await ensureArchiveScope();
+      checkStop();
       if(!tree?.complete){
-        const restored=(await chrome.storage.local.get(TREE_KEY))[TREE_KEY];
-        if(restored?.complete)tree=restored;
+        stage("Подготовка: восстанавливаю карту каталогов (без скачивания).");
+        await inventoryTree();
       }
-      if(!tree?.complete)await inventoryTree();
-      if(!tree?.complete || Object.keys(tree.files||{}).length!==1199)
-        throw new Error("Не удалось получить полную карту RAR. Скачивание не начато.");
+      checkStop();
+      if(!tree?.complete||tree.scopeId!==scope.scopeId)
+        throw new Error("Не удалось построить полную карту этого RAR. Скачивание не начато.");
       const frame=bestFrame();
       if(!frame)throw new Error("Просмотрщик Яндекса не найден");
       running=true;treePhase="raw-harvest";treeFrame=frame.frameId;
-      const previous=await send({kind:"RR_HARVEST_REPORT"});
-      const already=previous.requests||{};
+      stage("Подготовка: сверяю сохранённый журнал и пропускаю уже обработанные файлы.");
+      const previous=await send({kind:"RR_HARVEST_PLAN",scope});
+      checkStop();
+      const already=new Set(previous.processedSourcePaths||[]);
+      const safeRetryPaths=new Set(previous.retryableSourcePaths||[]);
       const groups=new Map();
       for(const file of Object.values(tree.files)){
         // Old strict-ledger "downloaded" states cannot prove the server
         // actually returned the requested file. In raw capture mode visit
-        // all 1199 original rows once, including those from earlier versions.
+        // all discovered members, using only this archive's click ledger.
         // Resume by ONLY skipping requests already recorded in this mode.
-        const previousAttempt=already[file.sourcePath];
-        // Only known row-lookup failures were NEVER clicked and may be retried.
-        const lookupOnlyFailure=previousAttempt?.state==="not-clicked" &&
-          !Number(previousAttempt.clickConfirmedAt||0) &&
-          !Number(previousAttempt.clickedAt||0) &&
-          !previousAttempt.downloadIds?.length;
-        if(previousAttempt && !lookupOnlyFailure){
+        if(already.has(file.sourcePath) && !safeRetryPaths.has(file.sourcePath)){
           skipped++;
           continue;
         }
@@ -842,17 +1131,41 @@
         await exportAutomaticHarvestReport();
         return;
       }
-      await send({kind:"RR_HARVEST_BEGIN",total:1199});
+      checkStop();
+      stage("Подготовка: запускаю сеанс сохранённой очереди, файлов пока не нажимал.");
+      await send({kind:"RR_HARVEST_BEGIN",scope,total:Object.keys(tree.files).length});
       captureBegun=true;
+      checkStop();
+      stage("Подготовка: проверяю навигацию к каталогам без кликов по файлам.");
       await beginKnownPathNavigation(frame.frameId);
-      const folders=[...groups.keys()].sort((a,b)=>a.localeCompare(b));
-      notice="Запускаю "+folders.length+" каталогов, "+[...groups.values()].reduce((n,a)=>n+a.length,0)+
-        " новых запросов. Запись без переименования полученных файлов.";
+      checkStop();
+      harvestStage="collecting";
+      notice="Карта: "+Object.keys(tree.files).length+
+        " файлов; обработано ранее: "+skipped+
+        ". Начинаю последовательные загрузки.";
       show(notice);
-      for(const dir of folders){
-        if(stopRequested)break;
-        await goToKnownDirectory(frame.frameId,dir);
-        for(const file of groups.get(dir)){
+      for(let pass=0;pass<3&&!stopRequested;pass++){
+        let passGroups=groups;
+        if(pass>0){
+          await sleep(3000*pass);
+          const current=await send({kind:"RR_HARVEST_PLAN",scope});
+          const remaining=new Set(current.retryableSourcePaths||[]);
+          passGroups=new Map();
+          for(const file of Object.values(tree.files)){
+            if(!remaining.has(file.sourcePath))continue;
+            const list=passGroups.get(file.folder)||[];
+            list.push(file);
+            passGroups.set(file.folder,list);
+          }
+        }
+        if(!passGroups.size)break;
+        const folders=[...passGroups.keys()].sort((a,b)=>a.localeCompare(b));
+        if(pass>0)show("Повторный проход "+pass+": "+[...passGroups.values()].reduce((n,a)=>n+a.length,0)+
+          " доказанно неудачных позиций");
+        for(const dir of folders){
+          if(stopRequested)break;
+          await goToKnownDirectory(frame.frameId,dir);
+          for(const file of passGroups.get(dir)){
           if(stopRequested)break;
           // Preflight may scroll a virtualized directory, without clicking.
           // Do this before the 120-second click deadline starts.
@@ -878,10 +1191,17 @@
               });
             }catch(error){preflight={ok:false,error:String(error.message||error)};}
           }
-          if(!preflight?.ok||!preflight.inspected)
-            throw new Error("Viewer cannot locate "+file.sourcePath+
-              " ("+String(preflight?.error||"row missing")+
-              "). No click was sent. Reload Yandex viewer, then resume.");
+          if(!preflight?.ok||!preflight.inspected){
+            const arm=await send({kind:"RR_HARVEST_ARM",folder:file.folder,filename:file.name});
+            if(!arm.skipped){
+              await send({kind:"RR_HARVEST_LOOKUP_FAILED",folder:file.folder,filename:file.name,
+                reason:String(preflight?.error||"file-row-not-visible").slice(0,160)});
+              failedActions++;
+            }
+            show("Не удалось обнаружить строку "+file.sourcePath+
+              " — факт отсутствия клика записан, продолжаю остальные файлы.");
+            continue;
+          }
           const arm=await send({kind:"RR_HARVEST_ARM",folder:file.folder,filename:file.name});
           if(arm.skipped){skipped++;continue;}
           const dispatched=await send({kind:"RR_HARVEST_DISPATCH",folder:file.folder,filename:file.name});
@@ -911,26 +1231,33 @@
           // terminal download or exactly 120 seconds have passed.
           let result={state:"waiting",remainingMs:120000};
           let lastCountRefresh=0;
+          harvestWaitingSource=file.sourcePath;
           while(result.state==="waiting"){
+            const wakeVersion=harvestWake.snapshot();
             result=await send({kind:"RR_HARVEST_CHECK",folder:file.folder,filename:file.name});
             if(!result.ok)throw new Error(result.error||"Нет учёта загрузки");
             const seconds=Math.max(0,Math.ceil((result.remainingMs||0)/1000));
             progress="Нажатий: "+clicked+"; ожидание: "+seconds+" с; "+
-              "последний исходный путь: Disk-2.rar/"+file.sourcePath+
+              "последний исходный путь: "+archiveRoot()+"/"+file.sourcePath+
               "; результат: "+result.state;
             if(Date.now()-lastCountRefresh>2200||result.state!=="waiting"){
               harvestSummary=await send({kind:"RR_HARVEST_STATUS"});
               render();lastCountRefresh=Date.now();
             }
             if(result.state!=="waiting")break;
-            await sleep(Math.max(1,Math.min(850,result.remainingMs||850)));
+            // Download events arrive in the extension service worker even
+            // when the page's short polling timers have been throttled.
+            // Wait for the terminal browser event, or poll if it is lost.
+            await harvestWake.wait(wakeVersion,Math.max(1,Math.min(850,result.remainingMs||850)));
           }
+          harvestWaitingSource=null;
           if(result.state==="timed_out")show("120 секунд истекли для "+file.sourcePath+
             ". Повторного клика нет. Перехожу к следующему файлу.");
           else if(result.state==="interrupted")show("Загрузка прервана для "+file.sourcePath+
             ". Причину сохраняю в журнал; очередь продолжается.");
           else if(result.state==="not-clicked")show("Кнопка не нажалась: "+file.sourcePath+
             ". Пропускаю, журнал сохраняется.");
+          }
         }
       }
       notice=stopRequested ?
@@ -943,14 +1270,18 @@
         ". Уже выгруженное сохранено. Запусти той же кнопкой для продолжения.";
       show(notice);
     }finally{
+      harvestStage="finishing";
       if(captureBegun){
+        stage("Завершаю сеанс и сохраняю журнал; новый клик не выполняется.");
         try{
           await send({kind:"RR_HARVEST_STOP"});
           harvestSummary=await send({kind:"RR_HARVEST_STATUS"});
           await exportAutomaticHarvestReport();
         }catch(error){show("Журнал сохранён локально, но экспорт JSON не удался: "+error.message);}
       }
-      running=false;harvestLoopActive=false;stopRequested=false;treePhase="";treeFrame=null;
+      harvestWaitingSource=null;
+      running=false;harvestLoopActive=false;harvestStage="idle";
+      stopRequested=false;treePhase="";treeFrame=null;
       progress="";render();
     }
   }
@@ -1179,6 +1510,13 @@
 
   chrome.runtime.onMessage.addListener(message=>{
     if(!message || !message.kind)return;
+    if(message.kind==="RR_HARVEST_TERMINAL"){
+      if(harvestLoopActive&&scope?.scopeId===message.scopeId&&
+         harvestWaitingSource===message.sourcePath&&
+         ["complete","interrupted"].includes(message.state))
+        harvestWake.notify();
+      return;
+    }
     if(message.kind==="RR_TOGGLE")mount();
     if(message.kind==="RR_SENSOR_REPORT" && message.requestId===scanId) {
       frames.set(String(message.frameId),message);
@@ -1193,7 +1531,7 @@
         // Yandex sometimes delivers a file after the earlier wait timed out.
         // Such a late success must be recorded but must never trigger re-click.
         notice="Запоздалый результат: "+(message.key||"файл")+" — "+message.state;
-        if(tree && message.key?.startsWith("Disk-2.rar/")) {
+        if(!scope && tree && message.key?.startsWith("Disk-2.rar/")) {
           const path=message.key.slice("Disk-2.rar/".length);
           if(tree.files[path]) {
             tree.files[path].status=message.state==="downloaded"?"downloaded":"needs-review";
@@ -1208,7 +1546,6 @@
     }
   });
   void countDownloads().catch(()=>{});
-  void chrome.storage.local.get(TREE_KEY).then(data=>{
-    tree=data[TREE_KEY] || null;render();
-  }).catch(()=>{});
+  // The per-archive map is loaded on the first one-button run. Never load
+  // the legacy global Disk-2 map into an unrelated public archive.
 })();

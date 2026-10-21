@@ -11,12 +11,14 @@
       this.dom=dom;
       this.delay=config.delay || (ms=>new Promise(resolve=>setTimeout(resolve,ms)));
       this.maxDepth=32;
-      this.maxObjects=3500;
+      this.maxObjects=100000;
       this.maxScrollSteps=400;
       this.frames=[];
       this.halted=false;
       this.seenPaths=new Set();
       this.objectCount=0;
+      this.resumeDirectories=new Map();
+      this.resumeComplete=new Set();
     }
 
     currentRows() { return this.dom.archiveRows(this.doc); }
@@ -71,17 +73,81 @@
     }
 
     pathOf(parent,child) {
-      if(child==="." || child===".." || child.includes("/") || child.includes("\\") || !child)
+      if(child==="." || child===".." || child.includes("/") || child.includes("\\") ||
+         !child||["__proto__","prototype","constructor"].includes(child.toLowerCase()))
         throw new Error("unsafe-folder-name");
       const path=(parent ? parent+"/" : "")+child;
       if(path.split("/").length>this.maxDepth)throw new Error("maximum-depth-exceeded");
       return path;
     }
 
+    signatureOf(entries){
+      return entries.map(x=>x.kind+"|"+x.name).sort().join("\n");
+    }
+    loadCheckpoint(checkpoint){
+      this.resumeDirectories=new Map();
+      this.resumeComplete=new Set();
+      if(!checkpoint)return;
+      const dirs=checkpoint.directories,closed=checkpoint.completedSubtrees;
+      if(!dirs||typeof dirs!=="object"||Array.isArray(dirs)||
+         !Array.isArray(closed)||Object.keys(dirs).length>this.maxObjects||
+         !Object.prototype.hasOwnProperty.call(dirs,""))
+        throw new Error("invalid-crawl-checkpoint");
+      for(const [path,dir] of Object.entries(dirs)){
+        if(typeof path!=="string"||path.length>2500||!dir||
+           dir.path!==path||!Array.isArray(dir.entries)||
+           dir.entries.length>this.maxObjects||
+           (path&&path.split("/").some(part=>!part||part==="."||part===".."||
+             part.length>200||["__proto__","prototype","constructor"].includes(part.toLowerCase())||
+             /[\\\\\u0000-\u001f]/.test(part))))
+          throw new Error("invalid-crawl-checkpoint-path");
+        const names=new Set();
+        for(const entry of dir.entries){
+          if(!entry||typeof entry.name!=="string"||
+             !/^[^\u0000-\u001f/\\\\]{1,200}$/.test(entry.name)||
+             ["__proto__","prototype","constructor"].includes(entry.name.toLowerCase())||
+             !["file","folder"].includes(entry.kind)||
+             names.has(entry.name.normalize("NFC").toLowerCase()))
+            throw new Error("invalid-crawl-checkpoint-entry");
+          names.add(entry.name.normalize("NFC").toLowerCase());
+        }
+        this.resumeDirectories.set(path,dir.entries);
+      }
+      for(const path of closed){
+        if(typeof path!=="string"||!path||!this.resumeDirectories.has(path))
+          throw new Error("invalid-crawl-checkpoint-closed-path");
+        this.resumeComplete.add(path);
+      }
+    }
+    countCachedSubtree(path){
+      // A closed subtree is a *completed* DFS frame. Every folder child
+      // must already have a captured listing, even if it was empty.
+      const seen=new Set(),pending=[path];
+      let objects=0;
+      while(pending.length){
+        const item=pending.pop();
+        if(seen.has(item))throw new Error("checkpoint-folder-cycle");
+        seen.add(item);
+        const entries=this.resumeDirectories.get(item);
+        if(!entries)throw new Error("checkpoint-missing-child-directory");
+        objects+=entries.length;
+        if(this.objectCount+objects>this.maxObjects)
+          throw new Error("maximum-object-count-exceeded");
+        for(const row of entries){
+          if(row.kind==="folder")pending.push(item+"/"+row.name);
+        }
+      }
+      if([...seen].some(key=>this.seenPaths.has(key)))
+        throw new Error("checkpoint-overlapping-visited-path");
+      return {objects,paths:seen};
+    }
     push(path,collection){
       if(!collection.ok || !collection.complete)throw new Error(collection.error || "incomplete-directory-inventory");
       if(this.seenPaths.has(path))throw new Error("directory-cycle-or-duplicate");
       const entries=collection.items;
+      const cached=this.resumeDirectories.get(path);
+      if(cached&&this.signatureOf(cached)!==this.signatureOf(entries))
+        throw new Error("checkpoint-directory-changed:"+path);
       if(this.objectCount+entries.length>this.maxObjects)throw new Error("maximum-object-count-exceeded");
       this.objectCount+=entries.length;
       this.seenPaths.add(path);
@@ -95,19 +161,36 @@
         discoveredObjects:this.objectCount};
     }
 
-    async begin() {
+    async begin(expectedArchiveName=null,checkpoint=null) {
       this.frames=[];this.halted=false;this.seenPaths.clear();this.objectCount=0;
+      try{this.loadCheckpoint(checkpoint);}
+      catch(error){return {ok:false,error:String(error.message||error)};}
+      // Verify viewer identity, never infer the root from expected member names.
+      const header=this.doc.querySelector('[class*="archiveHeader_"]');
+      if(expectedArchiveName){
+        const label=header?.querySelector("strong")?.textContent?.trim();
+        if(!label || !header || label.normalize("NFC")!==expectedArchiveName.normalize("NFC"))
+          return {ok:false,error:"archive-viewer-identity-not-confirmed"};
+      }
+      // Some viewer versions expose a navigational path; when present, it is
+      // evidence that the user is inside a folder rather than at the root.
+      const pathHint=header?.getAttribute("data-archive-path");
+      if(pathHint && pathHint!=="/" && pathHint!==".")
+        return {ok:false,error:"not-at-archive-root"};
       const collection=await this.enumerate();
       if(!collection.ok || !collection.complete)
         return {ok:false,error:collection.error || "cannot-read-full-root-list"};
-      const roots=new Set(collection.items.map(x=>x.name));
-      // This extension targets the known public Disk 2.rar, not arbitrary
-      // archives; starting in a subfolder silently corrupts relative paths.
-      const markers=["README.TXT","INDEX.HTM","CDVIEWER.EXE","HELP","JRE"];
-      if(markers.filter(x=>roots.has(x)).length<2)
-        return {ok:false,error:"not-at-known-rar-root",names:collection.items.slice(0,5).map(x=>x.name)};
-      try {return this.push("",collection);}
-      catch(error){this.halted=true;return {ok:false,error:error.message};}
+      try{return this.push("",collection);}
+      catch(error){
+        this.halted=true;
+        // A nested folder may have replaced the root after a lost iframe.
+        // Without an explicit root breadcrumb, do not throw away the saved
+        // inventory and misinterpret that child as a new archive root.
+        if(checkpoint&&String(error.message||"")==="checkpoint-directory-changed:"&&
+           pathHint!=="/"&&pathHint!==".")
+          return {ok:false,error:"archive-root-unverified-for-checkpoint-reset"};
+        return {ok:false,error:error.message};
+      }
     }
 
     async locate(name,expectedKind) {
@@ -131,16 +214,50 @@
       return null;
     }
 
-    async waitForChange(previous,timeout=8500) {
+    navigationHint(){
+      const header=this.doc.querySelector('[class*="archiveHeader_"]');
+      const path=header?.getAttribute("data-archive-path");
+      return path==null?null:path;
+    }
+
+    async waitForChange(previous,timeout=8500,previousHint=null) {
       const start=Date.now();
       while(Date.now()-start<timeout){
         await this.delay(170);
-        if(this.snapshot()!==previous) {
+        // Listing contents alone are insufficient: parent and child folders
+        // may contain exactly the same member names. A viewer-provided path
+        // transition is also acceptable navigation evidence.
+        const changed=this.snapshot()!==previous||
+          (previousHint!==null&&this.navigationHint()!==previousHint);
+        if(changed) {
           await this.delay(240);
           return true;
         }
       }
       return false;
+    }
+
+    async rewindToRoot(expectedArchiveName=null){
+      const header=this.doc.querySelector('[class*="archiveHeader_"]');
+      const title=header?.querySelector("strong")?.textContent?.trim();
+      if(expectedArchiveName && title!==expectedArchiveName)
+        return {ok:false,error:"archive-viewer-identity-not-confirmed"};
+      while(this.frames.length>1){
+        const child=this.frames[this.frames.length-1];
+        const parent=this.frames[this.frames.length-2];
+        const back=this.backButton();
+        if(!back)return {ok:false,error:"cannot-rewind-crawler-no-back-control",path:child.path};
+        const before=this.snapshot(),hint=this.navigationHint();
+        back.click();
+        if(!await this.waitForChange(before,8500,hint))
+          return {ok:false,error:"cannot-rewind-crawler-navigation-unconfirmed",path:child.path};
+        const listing=await this.enumerate();
+        if(!listing.ok||!listing.complete||
+           listing.items.map(x=>x.name).sort().join("\n")!==parent.signature)
+          return {ok:false,error:"cannot-rewind-crawler-parent-mismatch",path:parent.path};
+        this.frames.pop();
+      }
+      return {ok:true,rootReached:this.frames.length===1};
     }
 
     backButton() {
@@ -164,14 +281,26 @@
         if(this.frames.length>=this.maxDepth) {
           this.halted=true;return {ok:false,error:"maximum-depth-exceeded",path};
         }
+        if(this.resumeComplete.has(path)){
+          try{
+            const cached=this.countCachedSubtree(path);
+            for(const seen of cached.paths)this.seenPaths.add(seen);
+            this.objectCount+=cached.objects;
+            here.index++;
+            return {ok:true,event:"skipped",path,skippedObjects:cached.objects,
+              cachedPaths:cached.paths.size,discoveredObjects:this.objectCount};
+          }catch(error){
+            this.halted=true;return {ok:false,error:String(error.message||error),path};
+          }
+        }
         const row=await this.locate(name,"folder");
         if(!row){
           this.halted=true;return {ok:false,error:"folder-row-not-visible",path};
         }
-        const old=this.snapshot();
+        const old=this.snapshot(),oldHint=this.navigationHint();
         const target=row.querySelector('[class*="resourceItemName_"]') || row;
         target.click();
-        const changed=await this.waitForChange(old);
+        const changed=await this.waitForChange(old,8500,oldHint);
         if(!changed){
           this.halted=true;return {ok:false,error:"folder-navigation-not-confirmed",path};
         }
@@ -181,7 +310,15 @@
         }
         here.index++;
         try{return this.push(path,collection);}
-        catch(error){this.halted=true;return {ok:false,error:error.message,path};}
+        catch(error){
+          // The UI is already inside the child. Keep a provisional stack
+          // frame so the NEXT begin() can safely rewind by the verified
+          // parent list, even though the child's cache was rejected.
+          this.frames.push({path,entries:collection.items,folders:[],index:0,
+            signature:collection.items.map(x=>x.name).sort().join("\n")});
+          this.halted=true;
+          return {ok:false,error:error.message,path};
+        }
       }
       if(this.frames.length===1)return {ok:true,event:"complete",
         paths:this.seenPaths.size,objects:this.objectCount};
@@ -191,9 +328,9 @@
       if(!back){
         this.halted=true;return {ok:false,error:"back-control-not-found",path:child.path};
       }
-      const old=this.snapshot();
+      const old=this.snapshot(),oldHint=this.navigationHint();
       back.click();
-      const changed=await this.waitForChange(old);
+      const changed=await this.waitForChange(old,8500,oldHint);
       if(!changed){
         this.halted=true;return {ok:false,error:"back-navigation-not-confirmed",path:child.path};
       }
@@ -207,7 +344,8 @@
         this.halted=true;return {ok:false,error:"parent-inventory-changed",path:parent.path};
       }
       this.frames.pop();
-      return {ok:true,event:"returned",path:parent.path,depth:this.frames.length-1};
+      return {ok:true,event:"returned",path:parent.path,
+        completedPath:child.path,depth:this.frames.length-1};
     }
   }
 
