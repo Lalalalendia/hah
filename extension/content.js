@@ -72,8 +72,20 @@
   async function send(message) {
     if(scope&&message?.kind?.startsWith("RR_HARVEST_")&&!message.scope)
       message={...message,scope};
-    const response = await chrome.runtime.sendMessage(message);
-    if (!response || !response.ok) throw new Error(response?.error || "Расширение не ответило");
+    const stage=String(message.kind||"unknown")+
+      (message.kind==="RR_FRAME_CALL"?"/"+String(message.payload?.kind||"unknown"):"");
+    const started=Date.now();
+    let response;
+    try{response=await chrome.runtime.sendMessage(message);}
+    catch(error){
+      const detail=String(error?.message||error);
+      const elapsed=Math.round((Date.now()-started)/1000);
+      throw new Error(/message channel closed|Receiving end does not exist|Could not establish connection/i.test(detail)?
+        "Канал расширения оборвался на "+stage+" спустя "+elapsed+
+        " с. Команда не будет автоматически повторена; уже учтённые файлы сохранены.":
+        "Ошибка "+stage+": "+detail);
+    }
+    if(!response?.ok)throw new Error(response?.error||"Нет ответа на "+stage);
     return response;
   }
   let viewerFrameAlias=null;
@@ -947,8 +959,10 @@
         state:item.state,bytes:Number(item.bytes)||0,
         reason:String(item.reason||"").slice(0,160)
       }));
+    const diagnostics=(await chrome.storage.local.get("rr_last_command_failure_v1"))
+      .rr_last_command_failure_v1||null;
     const merged={
-      ...report,
+      ...report,transportDiagnostic:diagnostics,
       archive:scope?.archiveName||null,scopeId:scope?.scopeId||null,
       sourceManifest:{objects:tree?.observedObjects||null,
         files:Object.keys(tree?.files||{}).length,
@@ -983,8 +997,8 @@
       const frame=bestFrame();
       if(!frame)throw new Error("Просмотрщик Яндекса не найден");
       running=true;treePhase="raw-harvest";treeFrame=frame.frameId;
-      const previous=await send({kind:"RR_HARVEST_REPORT",scope});
-      const already=previous.requests||{};
+      const previous=await send({kind:"RR_HARVEST_PLAN",scope});
+      const already=new Set(previous.processedSourcePaths||[]);
       const safeRetryPaths=new Set(previous.retryableSourcePaths||[]);
       const groups=new Map();
       for(const file of Object.values(tree.files)){
@@ -992,13 +1006,7 @@
         // actually returned the requested file. In raw capture mode visit
         // all discovered members, using only this archive's click ledger.
         // Resume by ONLY skipping requests already recorded in this mode.
-        const previousAttempt=already[file.sourcePath];
-        // Only known row-lookup failures were NEVER clicked and may be retried.
-        const lookupOnlyFailure=previousAttempt?.state==="not-clicked" &&
-          !Number(previousAttempt.clickConfirmedAt||0) &&
-          !Number(previousAttempt.clickedAt||0) &&
-          !previousAttempt.downloadIds?.length;
-        if(previousAttempt && !safeRetryPaths.has(file.sourcePath)){
+        if(already.has(file.sourcePath) && !safeRetryPaths.has(file.sourcePath)){
           skipped++;
           continue;
         }
@@ -1022,7 +1030,7 @@
         let passGroups=groups;
         if(pass>0){
           await sleep(3000*pass);
-          const current=await send({kind:"RR_HARVEST_REPORT",scope});
+          const current=await send({kind:"RR_HARVEST_PLAN",scope});
           const remaining=new Set(current.retryableSourcePaths||[]);
           passGroups=new Map();
           for(const file of Object.values(tree.files)){
