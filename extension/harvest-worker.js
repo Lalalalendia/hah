@@ -407,6 +407,16 @@ class HarvestWorker {
     return {ok:true,state:"waiting",remainingMs:Math.max(0,req.deadlineAt-Date.now()),
       downloadIds:[...req.downloadIds]};
   }
+  // Small, read-only queue snapshot; do not shuttle multi-MB download
+  // histories across MV3 response ports at every resume and retry pass.
+  async plan(){
+    await this.ready;await this.serial;
+    const rows=Object.values(this.state.requests);
+    return {ok:true,total:this.state.sourcePathsCount,
+      processedSourcePaths:rows.map(row=>row.sourcePath),
+      retryableSourcePaths:rows.filter(row=>isSafeToRetryLookup(row)||
+        isSafeToRetryInterrupted(row,this.state.downloads)).map(row=>row.sourcePath)};
+  }
   async status(){await this.ready;await this.serial;return this.summary();}
   summary(){
     const requests=Object.values(this.state.requests);
