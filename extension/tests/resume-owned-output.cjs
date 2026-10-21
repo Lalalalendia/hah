@@ -25,7 +25,10 @@ function harness(owner,mode){
   };
   const events=[],calls=[];
   const ctx={URL,location:{href:url},document:{title:"Яндекс Диск",
-    querySelector:()=>null},frame,RarRescueArchiveScope:api,store,events,calls};
+    querySelector:()=>null},frame,RarRescueArchiveScope:api,
+    // This older test covers the fallback owner allocator when no verified
+    // historical click ledger has been discovered.
+    RarRescueResume:{find:async()=>null},store,events,calls};
   ctx.globalThis=ctx;
   ctx.chrome={storage:{local:{async get(key){return {[key]:store[key]};}}}};
   ctx.send=async(message)=>{
