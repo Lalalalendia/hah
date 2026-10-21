@@ -55,6 +55,21 @@ async function within(p,ms=600){
 }
 (async()=>{
   assert.equal(readyRestoreReads,1,"Background router restore must be stalled");
+  // Browser scan and sensor reports must also work before any large
+  // session is loaded, otherwise the only user-visible button remains gray.
+  function call(payload,sender){
+    return new Promise(resolve=>{
+      assert.equal(onMessage(payload,sender,resolve),true);
+    });
+  }
+  const publicTab={id:21,url:"https://disk.yandex.ru/client/disk"};
+  const scan=await within(call({kind:"RR_SCAN_FRAMES",requestId:"test-scan"},
+    {frameId:0,tab:publicTab,url:publicTab.url}));
+  assert.equal(scan.ok,true);
+  const report=await within(call({kind:"RR_SENSOR_REPORT",requestId:"test-scan",
+    count:8,folders:7,host:"docviewer.yandex.ru",names:["README.TXT"]},
+    {frameId:7,tab:publicTab,url:"https://docviewer.yandex.ru/view"}));
+  assert.equal(report.ok,true);
   const url="https://disk.yandex.ru/client/disk";
   assert.equal((await within(request(one,url))).ok,true);
   assert.equal((await within(request(one,url))).ok,true,"Same scope is idempotent");
