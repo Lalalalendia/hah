@@ -24,11 +24,11 @@ const api={
     }
   }
 };
-const c={chrome:api,Date,URL};c.globalThis=c;vm.createContext(c);
-for(const file of ["common.js","archive-scope.js","harvest-worker.js","harvest-router.js","viewer-channel.js"])
+const c={chrome:api,Date,URL,setTimeout,clearTimeout};c.globalThis=c;vm.createContext(c);
+for(const file of ["common.js","archive-scope.js","harvest-worker.js","harvest-router.js","viewer-channel.js","message-guard.js"])
   vm.runInContext(fs.readFileSync(path.join(dir,file),"utf8"),c);
 vm.runInContext(fs.readFileSync(path.join(dir,"background.js"),"utf8")
-  .replace('importScripts("common.js","archive-scope.js","harvest-worker.js","harvest-router.js","viewer-channel.js");',''),c);
+  .replace('importScripts("common.js","archive-scope.js","harvest-worker.js","harvest-router.js","viewer-channel.js","message-guard.js");',''),c);
 function tab(id,key){
   const url="https://disk.yandex.ru/d/"+key;
   return {frameId:0,tab:{id,url},url};
