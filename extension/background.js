@@ -27,15 +27,17 @@ async function reserveOutputRoot(sender,raw){
     if(!scope||!RarRescueArchiveScope.matchesTab(scope,sender.tab.url)||
        scope.outputRoot!==raw.outputRoot)
       throw Error("Archive identity does not match the current Yandex web viewer");
-    const [stored,known]=await Promise.all([
-      chrome.storage.local.get(OUTPUT_OWNERS_KEY),
-      chrome.storage.local.get("rr_active_scopes_v16")
-    ]);
+    const stored=await chrome.storage.local.get(OUTPUT_OWNERS_KEY);
     const owners=stored[OUTPUT_OWNERS_KEY]||{};
     const root=scope.outputRoot.normalize("NFC").toLowerCase();
-    if(Object.prototype.hasOwnProperty.call(owners,root)&&
-       owners[root]!==scope.scopeId)
-      throw Error("Output folder is reserved by another archive; choose a distinct target");
+    if(Object.prototype.hasOwnProperty.call(owners,root)){
+      if(owners[root]!==scope.scopeId)
+        throw Error("Output folder is reserved by another archive; choose a distinct target");
+      // A confirmed same-scope owner is enough for idempotent registration.
+      // Do not wait for an unrelated old archive registry.
+      return {ok:true,scopeId:scope.scopeId,outputRoot:scope.outputRoot};
+    }
+    const known=await chrome.storage.local.get("rr_active_scopes_v16");
     // Even if the old ownership index is missing, an established capture
     // registered for this folder cannot be silently stolen by a fresh RAR.
     for(const rawOther of Array.isArray(known.rr_active_scopes_v16)?
