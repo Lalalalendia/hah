@@ -188,37 +188,38 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   });
   const respond=payload=>guard.reply(payload);
   (async () => {
-    // Reserving an output root needs only the tiny ownership index. It MUST
-    // NOT depend on legacy watchers or restoration of multi-MB capture logs.
-    // In MV3 a worker restart can spend minutes restoring archived sessions.
-    // Validate the sender before the fast-path; keep reservations serialized.
-    if(message.kind==="RR_RESERVE_OUTPUT_ROOT"){
+    // Lightweight setup and viewer discovery never need the old download
+    // journal. A cold MV3 worker must not wait to restore thousands of rows
+    // before it can find the iframe or reserve a folder.
+    if(["RR_RESERVE_OUTPUT_ROOT","RR_SCAN_FRAMES","RR_SENSOR_REPORT","RR_SENSOR_PICKED"]
+       .includes(message.kind)){
       if(!pageAllowed(sender))throw Error("Not a Yandex Disk tab");
-      if(sender.frameId!==0)throw Error("Only main archive panel may reserve output");
-      respond(await reserveOutputRoot(sender,message.scope));
-      return;
+      const tabId=sender.tab.id;
+      if(message.kind==="RR_RESERVE_OUTPUT_ROOT"){
+        if(sender.frameId!==0)throw Error("Only main archive panel may reserve output");
+        respond(await reserveOutputRoot(sender,message.scope));return;
+      }
+      if(message.kind==="RR_SCAN_FRAMES"){
+        if(sender.frameId!==0)throw Error("Only main archive panel may scan");
+        const id=String(message.requestId||"").slice(0,80);
+        await chrome.tabs.sendMessage(tabId,{kind:"RR_SENSOR_SCAN",requestId:id});
+        respond({ok:true});return;
+      }
+      const allowed=message.kind==="RR_SENSOR_REPORT"?
+        ["kind","requestId","host","names","count","folders","unknown",
+         "rowSelector","example","iconSamples","archiveName"]:
+        ["kind","host","found","name","ancestry","clickedTag","count"];
+      const sanitized={};
+      for(const field of allowed)
+        if(Object.prototype.hasOwnProperty.call(message,field))
+          sanitized[field]=message[field];
+      sanitized.frameId=sender.frameId;
+      await notify(tabId,sanitized);
+      respond({ok:true});return;
     }
     await ready;
     if (!pageAllowed(sender)) throw new Error("Not a Yandex Disk tab");
     const tabId = sender.tab.id;
-    if (message.kind === "RR_SENSOR_REPORT" || message.kind === "RR_SENSOR_PICKED") {
-      const allowed = message.kind === "RR_SENSOR_REPORT" ?
-        ["kind", "requestId", "host", "names", "count", "folders", "unknown", "rowSelector", "example", "iconSamples", "archiveName"] :
-        ["kind", "host", "found", "name", "ancestry", "clickedTag", "count"];
-      const sanitized = {};
-      for (const field of allowed) if (Object.prototype.hasOwnProperty.call(message, field)) sanitized[field] = message[field];
-      sanitized.frameId = sender.frameId;
-      await notify(tabId, sanitized);
-      respond({ ok: true });
-      return;
-    }
-    if (message.kind === "RR_SCAN_FRAMES") {
-      if (sender.frameId !== 0) throw new Error("Only the top-level panel can scan");
-      const id = String(message.requestId || "").slice(0, 80);
-      await chrome.tabs.sendMessage(tabId, { kind: "RR_SENSOR_SCAN", requestId: id });
-      respond({ ok: true });
-      return;
-    }
     if (message.kind === "RR_PICK_FILE" || message.kind === "RR_STOP_PICK") {
       if (sender.frameId !== 0) throw new Error("Only the top-level panel can pick");
       const kind = message.kind === "RR_PICK_FILE" ? "RR_SENSOR_START_PICK" : "RR_SENSOR_STOP_PICK";
