@@ -8,10 +8,7 @@ const LEDGER_KEY = "rr_ledger";
 const rawRouter=new globalThis.RarRescueHarvestRouter(
   chrome,RarRescueUtils,RarRescueArchiveScope,RarRescueHarvestWorker);
 const watchers={};
-const ready=Promise.all([
-  chrome.storage.session.get(STATE_KEY),
-  rawRouter.ready
-]).then(([session])=>{
+const ready=chrome.storage.session.get(STATE_KEY).then(session=>{
   Object.assign(watchers,session[STATE_KEY]||{});
 }).catch(()=>{});
 
@@ -218,6 +215,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       respond({ok:true});return;
     }
     await ready;
+    // The fast paths above never touch the multi-MB capture ledger.
+    // All other commands restore it before making download decisions.
+    await rawRouter.ready;
     if (!pageAllowed(sender)) throw new Error("Not a Yandex Disk tab");
     const tabId = sender.tab.id;
     if (message.kind === "RR_PICK_FILE" || message.kind === "RR_STOP_PICK") {
