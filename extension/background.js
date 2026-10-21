@@ -13,29 +13,46 @@ const ready=chrome.storage.session.get(STATE_KEY).then(session=>{
 }).catch(()=>{});
 
 const OUTPUT_OWNERS_KEY="rr_output_owners_v15";
-let outputReservationQueue=Promise.resolve();
-function reserveOutputRoot(sender,raw){
-  const job=outputReservationQueue.then(async()=>{
+// Never chain another owner allocation behind an unresolved storage promise:
+// one stuck Chrome storage call previously poisoned every later request.
+let outputReservationInFlight=false;
+async function reserveOutputRoot(sender,raw){
+  if(outputReservationInFlight)
+    throw Error("Previous output reservation has not finished; no new reservation was queued");
+  outputReservationInFlight=true;
+  try{
     if(!raw||typeof raw.archiveName!=="string"||
        !Number.isInteger(sender?.tab?.id))throw Error("Missing archive identity");
     const scope=RarRescueArchiveScope.restoreScope(raw);
     if(!scope||!RarRescueArchiveScope.matchesTab(scope,sender.tab.url)||
        scope.outputRoot!==raw.outputRoot)
       throw Error("Archive identity does not match the current Yandex web viewer");
-    const store=await chrome.storage.local.get(OUTPUT_OWNERS_KEY);
-    const owners=store[OUTPUT_OWNERS_KEY]||{};
+    const [stored,known]=await Promise.all([
+      chrome.storage.local.get(OUTPUT_OWNERS_KEY),
+      chrome.storage.local.get("rr_active_scopes_v16")
+    ]);
+    const owners=stored[OUTPUT_OWNERS_KEY]||{};
     const root=scope.outputRoot.normalize("NFC").toLowerCase();
     if(Object.prototype.hasOwnProperty.call(owners,root)&&
        owners[root]!==scope.scopeId)
       throw Error("Output folder is reserved by another archive; choose a distinct target");
+    // Even if the old ownership index is missing, an established capture
+    // registered for this folder cannot be silently stolen by a fresh RAR.
+    for(const rawOther of Array.isArray(known.rr_active_scopes_v16)?
+        known.rr_active_scopes_v16.slice(0,64):[]){
+      const other=RarRescueArchiveScope.restoreScope(rawOther);
+      if(other&&other.scopeId!==scope.scopeId&&
+         other.outputRoot.normalize("NFC").toLowerCase()===root)
+        throw Error("Output folder is reserved by another archive in the saved registry");
+    }
     if(owners[root]!==scope.scopeId){
       owners[root]=scope.scopeId;
       await chrome.storage.local.set({[OUTPUT_OWNERS_KEY]:owners});
     }
     return {ok:true,scopeId:scope.scopeId,outputRoot:scope.outputRoot};
-  });
-  outputReservationQueue=job.catch(()=>{});
-  return job;
+  }finally{
+    outputReservationInFlight=false;
+  }
 }
 
 async function saveWatchers() {
