@@ -60,23 +60,39 @@ class HarvestRouter {
     }
   }
   async bind(sender,raw){
-    await this.ready;
-    if(!raw)return this.forSender(sender);
+    if(!raw){await this.ready;return this.forSender(sender);}
     const scope=this.canonical(raw);
     if(!scope)throw Error("Invalid archive identity");
     const url=String(sender?.tab?.url||"");
     if(!this.scopeApi.matchesTab(scope,url))
       throw Error("Archive identity does not match the current tab");
     let worker=this.workers.get(scope.scopeId);
-    if(worker)return worker;
-    if(this.workers.size>=MAX_ARCHIVES)
+    if(worker){await worker.ready;return worker;}
+    // A known per-archive capture is loaded directly. Hydrating all
+    // historic RAR sessions before the first new click caused the stall.
+    const stored=await this.api.storage.local.get(REGISTRY_KEY);
+    const current=Array.isArray(stored[REGISTRY_KEY])?stored[REGISTRY_KEY]:[];
+    const registered=current.some(rawScope=>this.canonical(rawScope)?.scopeId===scope.scopeId);
+    if(!registered&&current.length>=MAX_ARCHIVES)
       throw Error("Too many stored archive sessions; export logs before starting more");
+    if(!registered&&current.some(rawScope=>{
+      const other=this.canonical(rawScope);
+      return other&&this.scopeApi.outputRootConflict(other,scope);
+    }))throw Error("Output folder is registered to another archive");
     worker=new this.Worker(this.api,this.utils,scope);
-    await worker.ready;
     this.workers.set(scope.scopeId,worker);
-    const scopes=[...this.workers.values()].map(w=>w.scope);
-    await this.api.storage.local.set({[REGISTRY_KEY]:scopes});
-    return worker;
+    try{
+      await worker.ready;
+      if(!registered){
+        // Preserve the entire registry, not merely the workers currently
+        // held in RAM, when a cold service worker registers a new archive.
+        await this.api.storage.local.set({[REGISTRY_KEY]:[...current,scope]});
+      }
+      return worker;
+    }catch(error){
+      this.workers.delete(scope.scopeId);
+      throw error;
+    }
   }
   forSender(sender){
     const url=String(sender?.tab?.url||"");
