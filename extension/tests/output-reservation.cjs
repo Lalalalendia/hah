@@ -49,7 +49,13 @@ const identity=(key,name)=>c.RarRescueArchiveScope.fromYandexPublicLink(
   assert.equal(results.filter(x=>x.ok).length,1,
     "Two source archives must never be reserved to one Windows folder");
   assert.equal(results.filter(x=>!x.ok).length,1);
-  assert(/reserved by another archive/i.test(results.find(x=>!x.ok).error));
+  assert(/reserved by another archive|reservation has not finished/i.test(
+    results.find(x=>!x.ok).error));
+  // The second tab retries only after the first reservation finishes.
+  const blocked=results[0].ok
+    ? await reserve(tab(11,"b2"),b)
+    : await reserve(tab(10,"a1"),a);
+  assert(!blocked.ok&&/reserved by another archive/.test(blocked.error));
   const winner=results[0].ok?a:b,ownerTab=results[0].ok?tab(10,"a1"):tab(11,"b2");
   assert((await reserve(ownerTab,winner)).ok,"Idempotent reservation by same source");
   const owners=store.rr_output_owners_v15;
