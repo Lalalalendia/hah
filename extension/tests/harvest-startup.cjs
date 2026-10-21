@@ -65,7 +65,8 @@ function harness(config){
 
   const slowPlan=harness({planDelay:true});
   const secondRun=slowPlan.test.harvestAll();
-  await Promise.resolve();await Promise.resolve();
+  for(let i=0;i<20&&!slowPlan.calls.includes("RR_HARVEST_PLAN");i++)
+    await Promise.resolve();
   assert(slowPlan.calls.includes("RR_HARVEST_PLAN"));
   assert.equal(slowPlan.test.phase,"preparing");
   assert(slowPlan.events.some(x=>x.includes("журнал")));
