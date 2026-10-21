@@ -40,16 +40,27 @@ async function find(storage,scopeApi,rawUrl,frame,detected){
   const owners=meta?.[OWNERS_KEY]||{};
   const rawScopes=Array.isArray(registry)?registry.slice(0,64):[];
   rawScopes.push(detected); // Recover exact old capture when registry is missing.
-  const visited=new Set(),matches=[];
+  const candidates=[],seen=new Set();
   for(const raw of rawScopes){
     const scope=scopeApi.restoreScope(raw);
-    if(!scope||visited.has(scope.scopeId)||!comparable(scope,detected)||
+    if(!scope||seen.has(scope.scopeId)||!comparable(scope,detected)||
        !scopeApi.matchesTab(scope,rawUrl))continue;
-    visited.add(scope.scopeId);
-    const state=await storage.get([scope.treeStorageKey,scope.harvestStorageKey]);
-    const tree=state?.[scope.treeStorageKey],capture=state?.[scope.harvestStorageKey];
-    if(!verifiedRoot(tree,frame)||tree.scopeId!==scope.scopeId||
-       capture?.schema!=="rar-rescue-capture-v3"||
+    seen.add(scope.scopeId);candidates.push(scope);
+  }
+  // Exact source identity first. Only if the Yandex title/fingerprint
+  // changed may we examine a few historic scopes on the same viewer path.
+  const exact=candidates.filter(x=>x.sourceKey===detected.sourceKey);
+  const selected=exact.length?exact:candidates;
+  if(selected.length>8)
+    throw Error("Слишком много сохранённых заданий этого веб-просмотрщика; нельзя выбрать архив автоматически");
+  const matches=[];
+  for(const scope of selected){
+    const treeData=await storage.get(scope.treeStorageKey);
+    const tree=treeData?.[scope.treeStorageKey];
+    if(!verifiedRoot(tree,frame)||tree.scopeId!==scope.scopeId)continue;
+    const captureData=await storage.get(scope.harvestStorageKey);
+    const capture=captureData?.[scope.harvestStorageKey];
+    if(capture?.schema!=="rar-rescue-capture-v3"||
        capture.scopeId!==scope.scopeId||
        !Number.isInteger(capture.sourcePathsCount)||
        capture.sourcePathsCount!==Object.keys(tree.files).length||
