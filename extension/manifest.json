@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Yandex RAR Rescue",
-  "version": "0.15.10",
+  "version": "0.15.11",
   "description": "RAR Rescue: inventory any Yandex web-viewable RAR, sequential downloads and per-archive resume.",
   "permissions": [
     "downloads",
@@ -30,6 +30,7 @@
         "manifest-model.js",
         "recovery-plan.js",
         "harvest-wakeup.js",
+        "archive-resume.js",
         "content.js"
       ],
       "css": [
