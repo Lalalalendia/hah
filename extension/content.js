@@ -25,6 +25,7 @@
   let treeFrame = null;
   let harvestSummary = null;
   let harvestLoopActive = false;
+  let harvestStage="idle"; // preparing, collecting, finishing; no fictitious file click
   const harvestWake=new RarRescueHarvestWake();
   let harvestWaitingSource=null;
   let scope = null;
@@ -76,7 +77,26 @@
       (message.kind==="RR_FRAME_CALL"?"/"+String(message.payload?.kind||"unknown"):"");
     const started=Date.now();
     let response;
-    try{response=await chrome.runtime.sendMessage(message);}
+    try{
+      const deadline={
+        RR_RESERVE_OUTPUT_ROOT:15000,RR_HARVEST_PLAN:20000,
+        RR_HARVEST_BEGIN:60000
+      }[message.kind];
+      if(!deadline)response=await chrome.runtime.sendMessage(message);
+      else {
+        // Best-effort page deadline: Chrome can throttle a frozen page, but
+        // the UI should not silently wait through normal worker failures.
+        let timer;
+        try{
+          response=await Promise.race([
+            chrome.runtime.sendMessage(message),
+            new Promise((_,reject)=>{timer=setTimeout(()=>reject(
+              Error("Нет ответа от "+stage+" за "+Math.round(deadline/1000)+
+                " секунд. Команда не повторялась.")),deadline);})
+          ]);
+        }finally{if(timer!==undefined)clearTimeout(timer);}
+      }
+    }
     catch(error){
       const detail=String(error?.message||error);
       const elapsed=Math.round((Date.now()-started)/1000);
@@ -128,7 +148,9 @@
     const candidateUnknown = bestFrame()?.unknown || 0;
     const best = bestFrame();
     if(el("rr-harvest")){
-      el("rr-harvest").textContent=harvestLoopActive ? "Остановить после текущего файла" :
+      el("rr-harvest").textContent=harvestLoopActive ?
+        (harvestStage==="collecting"?"Остановить после текущего файла":
+          harvestStage==="finishing"?"Завершаю сеанс":"Отменить подготовку") :
         scanning ? "Повторить поиск файлов" : best ? "Скачать всё" : "Найти файлы RAR";
       // Search is read-only: never lock the only button just because a
       // scan acknowledgment from the background worker has stalled.
@@ -1009,21 +1031,35 @@
     if(harvestLoopActive)return;
     if(running)return;
     harvestLoopActive=true;
+    harvestStage="preparing";
     stopRequested=false;
-    render();
+    const stage=message=>{progress=message;show(message);};
+    const checkStop=()=>{
+      if(stopRequested)throw Error("Подготовка отменена без скачивания; журнал сохранён");
+    };
+    stage("Подготовка: проверяю открытый архив. Скачивание ещё не началось.");
     let captureBegun=false;
     let clicked=0,skipped=0,failedActions=0;
     try{
-      // Discover arbitrary files and directories from the web viewer.
+      // No message about a clicked file until a real browser action occurs.
       if(!bestFrame())await scan();
+      checkStop();
+      stage("Подготовка: подтверждаю архив и выходную папку (без кликов).");
       await ensureArchiveScope();
-      if(!tree?.complete)await inventoryTree();
+      checkStop();
+      if(!tree?.complete){
+        stage("Подготовка: восстанавливаю карту каталогов (без скачивания).");
+        await inventoryTree();
+      }
+      checkStop();
       if(!tree?.complete||tree.scopeId!==scope.scopeId)
         throw new Error("Не удалось построить полную карту этого RAR. Скачивание не начато.");
       const frame=bestFrame();
       if(!frame)throw new Error("Просмотрщик Яндекса не найден");
       running=true;treePhase="raw-harvest";treeFrame=frame.frameId;
+      stage("Подготовка: сверяю сохранённый журнал и пропускаю уже обработанные файлы.");
       const previous=await send({kind:"RR_HARVEST_PLAN",scope});
+      checkStop();
       const already=new Set(previous.processedSourcePaths||[]);
       const safeRetryPaths=new Set(previous.retryableSourcePaths||[]);
       const groups=new Map();
@@ -1047,10 +1083,18 @@
         await exportAutomaticHarvestReport();
         return;
       }
+      checkStop();
+      stage("Подготовка: запускаю сеанс сохранённой очереди, файлов пока не нажимал.");
       await send({kind:"RR_HARVEST_BEGIN",scope,total:Object.keys(tree.files).length});
       captureBegun=true;
+      checkStop();
+      stage("Подготовка: проверяю навигацию к каталогам без кликов по файлам.");
       await beginKnownPathNavigation(frame.frameId);
-      notice="Карта: "+Object.keys(tree.files).length+" файлов. Последовательная выгрузка, затем безопасные повторы ошибок.";
+      checkStop();
+      harvestStage="collecting";
+      notice="Карта: "+Object.keys(tree.files).length+
+        " файлов; обработано ранее: "+skipped+
+        ". Начинаю последовательные загрузки.";
       show(notice);
       for(let pass=0;pass<3&&!stopRequested;pass++){
         let passGroups=groups;
@@ -1178,7 +1222,9 @@
         ". Уже выгруженное сохранено. Запусти той же кнопкой для продолжения.";
       show(notice);
     }finally{
+      harvestStage="finishing";
       if(captureBegun){
+        stage("Завершаю сеанс и сохраняю журнал; новый клик не выполняется.");
         try{
           await send({kind:"RR_HARVEST_STOP"});
           harvestSummary=await send({kind:"RR_HARVEST_STATUS"});
@@ -1186,7 +1232,8 @@
         }catch(error){show("Журнал сохранён локально, но экспорт JSON не удался: "+error.message);}
       }
       harvestWaitingSource=null;
-      running=false;harvestLoopActive=false;stopRequested=false;treePhase="";treeFrame=null;
+      running=false;harvestLoopActive=false;harvestStage="idle";
+      stopRequested=false;treePhase="";treeFrame=null;
       progress="";render();
     }
   }
