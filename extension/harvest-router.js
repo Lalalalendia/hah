@@ -126,10 +126,27 @@ class HarvestRouter {
     return worker.begin(sender.tab.id,total);
   }
   async forEvent(item){
-    await this.ready;
     if(!item||!this.utils.isDownloadHost(item.url||item.finalUrl||""))
       return null;
     const id=String(item.id);
+    // When Chrome gives the actual source tab and that tab has exactly one
+    // active verified click, do not load 64 unrelated archived captures.
+    // Detached or ambiguous events retain full reconciliation below.
+    const known=[...this.workers.values()];
+    const directlyOwned=known.filter(w=>
+      Object.prototype.hasOwnProperty.call(w.state.downloads,id));
+    if(directlyOwned.length===1)return directlyOwned[0];
+    if(directlyOwned.length>1)return null;
+    const nowDirect=Date.now();
+    const live=known.filter(w=>!w.invalidTab&&w.recording()&&
+      w.sourceAllowed(item)&&w.state.tabId===item.tabId&&
+      Object.values(w.state.requests).some(r=>Number(r.dispatchAt)>0&&
+        (!r.downloadIds||r.downloadIds.length===0)&&
+        nowDirect-Number(r.dispatchAt)>=-2000&&
+        nowDirect-Number(r.dispatchAt)<=60*60*1000));
+    if(live.length===1)return live[0];
+    if(live.length>1)return null;
+    await this.ready;
     const all=[...this.workers.values()];
     const owned=all.filter(w=>Object.prototype.hasOwnProperty.call(w.state.downloads,id));
     if(owned.length===1)return owned[0];
@@ -196,6 +213,10 @@ class HarvestRouter {
     return owners.length===1?owners[0]:null;
   }
   async changed(id,item){
+    const current=[...this.workers.values()].filter(w=>
+      Object.prototype.hasOwnProperty.call(w.state.downloads,String(id)));
+    if(current.length===1)return current[0].changed(id,item);
+    if(current.length>1)return false;
     await this.ready;
     const owners=[...this.workers.values(),this.legacy].filter(w=>
       Object.prototype.hasOwnProperty.call(w.state.downloads,String(id)));
