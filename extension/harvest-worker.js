@@ -407,15 +407,26 @@ class HarvestWorker {
     return {ok:true,state:"waiting",remainingMs:Math.max(0,req.deadlineAt-Date.now()),
       downloadIds:[...req.downloadIds]};
   }
-  // Small, read-only queue snapshot; do not shuttle multi-MB download
-  // histories across MV3 response ports at every resume and retry pass.
-  async plan(){
-    await this.ready;await this.serial;
-    const rows=Object.values(this.state.requests);
-    return {ok:true,total:this.state.sourcePathsCount,
+  // A scope-specific plan does not need the browser's entire download
+  // session registry, old legacy log, or a mutable HarvestWorker instance.
+  // This also prevents a blocked unrelated capture from freezing startup.
+  static planFromState(state,scopeId){
+    if(!state)return {ok:true,total:0,processedSourcePaths:[],retryableSourcePaths:[]};
+    if(state.schema!==SCHEMA||state.scopeId!==scopeId||
+       !state.requests||typeof state.requests!=="object"||
+       !state.downloads||typeof state.downloads!=="object"||
+       !Number.isInteger(state.sourcePathsCount)||
+       state.sourcePathsCount<0||state.sourcePathsCount>100000)
+      throw Error("Stored archive download journal is inconsistent; no new clicks allowed");
+    const rows=Object.values(state.requests);
+    return {ok:true,total:state.sourcePathsCount,
       processedSourcePaths:rows.map(row=>row.sourcePath),
       retryableSourcePaths:rows.filter(row=>isSafeToRetryLookup(row)||
-        isSafeToRetryInterrupted(row,this.state.downloads)).map(row=>row.sourcePath)};
+        isSafeToRetryInterrupted(row,state.downloads)).map(row=>row.sourcePath)};
+  }
+  async plan(){
+    await this.ready;await this.serial;
+    return HarvestWorker.planFromState(this.state,this.scope?.scopeId||null);
   }
   async status(){await this.ready;await this.serial;return this.summary();}
   summary(){
