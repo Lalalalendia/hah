@@ -25,6 +25,8 @@
   let treeFrame = null;
   let harvestSummary = null;
   let harvestLoopActive = false;
+  const harvestWake=new RarRescueHarvestWake();
+  let harvestWaitingSource=null;
   let scope = null;
   function archiveRoot(){return scope?.outputRoot||ARCHIVE;}
   let verifiedViewerTitle=null;
@@ -1103,7 +1105,9 @@
           // terminal download or exactly 120 seconds have passed.
           let result={state:"waiting",remainingMs:120000};
           let lastCountRefresh=0;
+          harvestWaitingSource=file.sourcePath;
           while(result.state==="waiting"){
+            const wakeVersion=harvestWake.snapshot();
             result=await send({kind:"RR_HARVEST_CHECK",folder:file.folder,filename:file.name});
             if(!result.ok)throw new Error(result.error||"Нет учёта загрузки");
             const seconds=Math.max(0,Math.ceil((result.remainingMs||0)/1000));
@@ -1115,8 +1119,12 @@
               render();lastCountRefresh=Date.now();
             }
             if(result.state!=="waiting")break;
-            await sleep(Math.max(1,Math.min(850,result.remainingMs||850)));
+            // Download events arrive in the extension service worker even
+            // when the page's short polling timers have been throttled.
+            // Wait for the terminal browser event, or poll if it is lost.
+            await harvestWake.wait(wakeVersion,Math.max(1,Math.min(850,result.remainingMs||850)));
           }
+          harvestWaitingSource=null;
           if(result.state==="timed_out")show("120 секунд истекли для "+file.sourcePath+
             ". Повторного клика нет. Перехожу к следующему файлу.");
           else if(result.state==="interrupted")show("Загрузка прервана для "+file.sourcePath+
@@ -1143,6 +1151,7 @@
           await exportAutomaticHarvestReport();
         }catch(error){show("Журнал сохранён локально, но экспорт JSON не удался: "+error.message);}
       }
+      harvestWaitingSource=null;
       running=false;harvestLoopActive=false;stopRequested=false;treePhase="";treeFrame=null;
       progress="";render();
     }
@@ -1372,6 +1381,13 @@
 
   chrome.runtime.onMessage.addListener(message=>{
     if(!message || !message.kind)return;
+    if(message.kind==="RR_HARVEST_TERMINAL"){
+      if(harvestLoopActive&&scope?.scopeId===message.scopeId&&
+         harvestWaitingSource===message.sourcePath&&
+         ["complete","interrupted"].includes(message.state))
+        harvestWake.notify();
+      return;
+    }
     if(message.kind==="RR_TOGGLE")mount();
     if(message.kind==="RR_SENSOR_REPORT" && message.requestId===scanId) {
       frames.set(String(message.frameId),message);
