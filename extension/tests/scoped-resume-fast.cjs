@@ -69,6 +69,23 @@ async function bounded(p){
     folder:"IMAGES",filename:"image00001.jpg"}));
   assert(existing.skipped,"Previously clicked file must NOT be clicked again");
   assert.equal(stored[scope.harvestStorageKey].requests["IMAGES/image00001.jpg"].state,"complete");
+  const router=vm.runInContext("rawRouter",ctx);
+  const worker=await router.bind(sender,scope);
+  const newName="image02166.jpg";
+  assert(!(await worker.arm("IMAGES",newName)).skipped);
+  assert((await worker.dispatch("IMAGES",newName)).ok);
+  assert((await worker.sent("IMAGES",newName,true)).ok);
+  const item={id:5099,tabId:11,
+    url:"https://docviewer.yandex.ru/download",
+    filename:newName,state:"in_progress",bytesReceived:0,totalBytes:100,
+    startTime:new Date().toISOString()};
+  assert(await bounded(router.created(item)),"Chrome event must attach to active click");
+  assert((await bounded(router.determine(item))).handled);
+  const done={...item,state:"complete",bytesReceived:100,
+    filename:"C:\\Downloads\\"+scope.outputRoot+"\\IMAGES\\"+newName};
+  assert(await bounded(router.changed(item.id,done)));
+  assert.equal(worker.state.downloads[String(item.id)].state,"complete");
+  assert.equal(worker.state.requests["IMAGES/"+newName].state,"complete");
   assert.equal(legacyReads,0,"Legacy large log must not be restored for this capture");
   assert.equal(allRestoreReads,0,"Unrelated 64-archive registry must not be restored");
   assert.equal(stored.rr_active_scopes_v16.length,1,"Registry remains unchanged");
