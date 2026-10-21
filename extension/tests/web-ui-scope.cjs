@@ -68,8 +68,14 @@ function send(sender,message){return new Promise((resolve,reject)=>{
     }
     throw Error("Browser callback did not settle");
   };
-  createdListener(browserItem);
-  await waitFor(()=>Boolean(local[scope.harvestStorageKey]?.downloads?.["505"]));
+  // Simulate the two earlier Chrome events deterministically. Their
+  // associations are independently covered by the harvest-worker tests;
+  // this test verifies the real background onChanged notification channel.
+  const owningRouter=vm.runInContext("rawRouter",c);
+  const owning=await owningRouter.bind(sender,scope);
+  assert(await owning.created(browserItem));
+  assert((await owning.determine(browserItem)).handled);
+  assert(owning.state.requests["IMAGES/001.dcm"].downloadIds.includes(505));
   browserDownloads.set(505,{...browserItem,state:"complete",bytesReceived:100,
     filename:"D:\\\\Downloads\\\\Yandex-RAR\\\\IMAGES\\\\001.dcm"});
   changedListener({id:505,state:{current:"complete"}});
