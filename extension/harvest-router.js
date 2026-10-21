@@ -11,15 +11,22 @@ const MAX_ARCHIVES=64;
 class HarvestRouter {
   constructor(api,utils,scopeApi,Worker){
     this.api=api;this.utils=utils;this.scopeApi=scopeApi;this.Worker=Worker;
-    this.legacy=new Worker(api,utils);
+    this._legacy=null;
     this.workers=new Map();
-    // Loading thousands of download records on every MV3 wake can delay even
-    // read-only iframe detection. Restore only when a capture command or
-    // browser download event actually needs the journal.
+    // A cold MV3 worker performs NO large downloads journal reads for
+    // a frame scan or an output-root reservation.
     this._ready=null;
   }
+  get legacy(){
+    if(!this._legacy)this._legacy=new this.Worker(this.api,this.utils);
+    return this._legacy;
+  }
   get ready(){
-    if(!this._ready)this._ready=this.restore();
+    if(!this._ready){
+      // Legacy and scoped stores are needed for ownership of late browser
+      // downloads, but only once a capture operation/event needs them.
+      this._ready=Promise.all([this.legacy.ready,this.restore()]).then(()=>{});
+    }
     return this._ready;
   }
   canonical(raw){
