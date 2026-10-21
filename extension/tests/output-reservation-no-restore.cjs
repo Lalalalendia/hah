@@ -34,7 +34,7 @@ for(const name of ["common.js","archive-scope.js","harvest-worker.js",
   vm.runInContext(fs.readFileSync(path.join(root,name),"utf8"),ctx);
 }
 const main=fs.readFileSync(path.join(root,"background.js"),"utf8")
-  .replace(/^importScripts\([^;]+;\s*/,"");
+  .replace(/importScripts\([^;]+;\s*/,"");
 vm.runInContext(main,ctx);
 const scopeApi=ctx.RarRescueArchiveScope;
 const one=scopeApi.fromYandexViewer("https://disk.yandex.ru/client/disk",
