@@ -79,6 +79,22 @@
     const resolved=archiveTitleResolution();
     const detected=RarRescueArchiveScope.fromYandexViewer(
       location.href,resolved.archiveName,resolved.fingerprint);
+    // A real previous click ledger + complete root manifest prove which
+    // existing archive this viewer belongs to. Reuse that exact identity,
+    // destination and all prior download IDs. Do not create a new scope based
+    // solely on a changing Yandex archive title.
+    const previous=await RarRescueResume.find(chrome.storage.local,
+      RarRescueArchiveScope,location.href,bestFrame(),detected);
+    if(previous){
+      if(scope&&!RarRescueArchiveScope.sameScope(scope,previous.scope))
+        throw Error("Открытый архив изменился во время восстановления");
+      scope=previous.scope;
+      tree=previous.tree;
+      verifiedViewerTitle=null;
+      show("Восстановлен исходный журнал: "+previous.processed+
+        " обработанных файлов. Использую прежнюю папку без регистрации.");
+      return scope;
+    }
     if(scope&&!RarRescueArchiveScope.sameScope(scope,detected))
       throw Error("The active archive changed during recovery");
     const reservation=await ensureOutputRoot(detected);
