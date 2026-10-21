@@ -12,7 +12,7 @@
   let panel = null, folder = "", frames = new Map(), scanId = "", scanning = false;
   let approved = null, pending = null, running = false, stopRequested = false;
   let events = [], downloaded = 0, failed = 0;
-  let notice = "Используем названия файлов и кнопки на скриншотах DevTools.";
+  let notice = "Ищу открытый RAR в веб-просмотрщике Яндекс Диска.";
   let progress = "";
   let lastInspection = [];
   let nativeVerified = false;
@@ -129,8 +129,10 @@
     const best = bestFrame();
     if(el("rr-harvest")){
       el("rr-harvest").textContent=harvestLoopActive ? "Остановить после текущего файла" :
-        "Скачать всё";
-      el("rr-harvest").disabled=scanning || (running&&!harvestLoopActive);
+        scanning ? "Повторить поиск файлов" : best ? "Скачать всё" : "Найти файлы RAR";
+      // Search is read-only: never lock the only button just because a
+      // scan acknowledgment from the background worker has stalled.
+      el("rr-harvest").disabled=running&&!harvestLoopActive;
     }
     if(el("rr-harvest-count")){
       const h=harvestSummary;
@@ -155,7 +157,8 @@
       "Открой веб-просмотрщик RAR и нажми «Скачать всё».";
     if (el("rr-progress")) el("rr-progress").textContent = (progress ? progress+" · " : "") +
       notice; // Old strict-ledger counts must not masquerade as new verified downloads.
-    if (el("rr-log")) el("rr-log").textContent = events.slice(0,9).join("\n") || "Ожидаю проверки.";
+    if (el("rr-log")) el("rr-log").textContent = events.slice(0,9).join("\n") ||
+      "Ищу файлы открытого RAR. Подтверждение от пользователя не требуется.";
     if (el("rr-resume-status")){
       const p=tree?.complete ? RarRescuePlan.pendingDirectories(tree,ledgerSnapshot) : null;
       el("rr-resume-status").textContent = p?.ok ?
@@ -223,6 +226,7 @@
     el("rr-close").addEventListener("click",()=>{panel.remove();panel=null;});
     el("rr-harvest").addEventListener("click",()=>{
       if(harvestLoopActive){stopRequested=true;show("Остановка после текущего запроса.");}
+      else if(scanning||!bestFrame())void scan();
       else void harvestAll();
     });
     render();
@@ -232,16 +236,38 @@
   async function scan() {
     viewerFrameAlias=null;
     if (running) return;
-    frames.clear();scanId=String(Date.now())+"-"+Math.random().toString(36).slice(2);
-    scanning=true;approved=null;render();
-    try { await send({kind:"RR_SCAN_FRAMES",requestId:scanId}); }
-    catch(error) { notice="Ошибка сканирования: "+error.message;show(notice); }
-    await sleep(1800);
+    frames.clear();
+    const requestId=String(Date.now())+"-"+Math.random().toString(36).slice(2);
+    scanId=requestId;
+    scanning=true;approved=null;
+    show("Ищу файлы открытого RAR. Если поиск завис — нажми «Повторить поиск файлов».");
+    let scanError="";
+    let timer=null;
+    try {
+      // A stalled MV3 response channel must not keep the one-click UI
+      // blocked for the full 45-second background guard. Sensor reports
+      // arrive as independent events and remain valid after this deadline.
+      await Promise.race([
+        send({kind:"RR_SCAN_FRAMES",requestId}),
+        new Promise((_,reject)=>{
+          timer=setTimeout(()=>reject(Error("Веб-просмотрщик не ответил за 6 секунд")),6000);
+        })
+      ]);
+    }catch(error){
+      scanError=String(error?.message||error).slice(0,180);
+    }finally{
+      if(timer!==null)clearTimeout(timer);
+    }
+    await sleep(1200);
+    if(scanId!==requestId)return; // A newer manual scan superseded this one.
     scanning=false;
     const best=bestFrame();
     notice=best ?
-      ("Обнаружено "+best.count+" файлов в корне Яндекс RAR. Для начала нажми «Скачать всё».") :
-      "Список файлов не получен. Проверь доступ расширения к встроенному docviewer и обнови страницу.";
+      ("Найден веб-просмотрщик RAR: "+best.count+" файлов, "+best.folders+
+       " папок. Нажми «Скачать всё», чтобы продолжить сохранённую очередь.") :
+      ("Файлы RAR не обнаружены"+(scanError?": "+scanError:"")+
+       ". Открой архив в просмотрщике и нажми «Найти файлы RAR». "+
+       "Журнал предыдущих загрузок сохранён.");
     show(notice);
   }
 
