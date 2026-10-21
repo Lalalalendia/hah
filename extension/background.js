@@ -258,9 +258,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       respond({ok:true});return;
     }
     await ready;
-    // The fast paths above never touch the multi-MB capture ledger.
-    // All other commands restore it before making download decisions.
-    await rawRouter.ready;
+    // Explicit RR_HARVEST_* commands bind their own trusted archive scope.
+    // Never hydrate every historical capture before this archive can resume.
+    // Legacy/unscoped operations retain the full reconciliation gate.
+    if(!message.kind.startsWith("RR_HARVEST_")||!message.scope)
+      await rawRouter.ready;
     if (!pageAllowed(sender)) throw new Error("Not a Yandex Disk tab");
     const tabId = sender.tab.id;
     if (message.kind === "RR_PICK_FILE" || message.kind === "RR_STOP_PICK") {
