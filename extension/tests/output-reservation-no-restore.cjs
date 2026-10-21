@@ -7,7 +7,8 @@ const noop={addListener(){}};
 const chrome={
   action:{onClicked:noop},
   runtime:{onMessage:{addListener(fn){onMessage=fn;}}},
-  tabs:{onRemoved:noop,sendMessage:async()=>({ok:true})},
+  tabs:{onRemoved:noop,sendMessage:async(_tab,message)=>message?.kind==="RR_SENSOR_LIST"?
+    {ok:true,items:[{name:"README.TXT",kind:"file"}]}:{ok:true}},
   downloads:{onCreated:noop,onChanged:noop,onDeterminingFilename:noop,search:async()=>[]},
   storage:{
     session:{get:async()=>session,set:async x=>Object.assign(session,x)},
@@ -63,6 +64,34 @@ async function within(p,ms=600){
   assert((await within(request(originalScope,"https://disk.yandex.ru/client/disk"))).ok);
   assert.equal(readyRestoreReads,0,"Folder reservation must not start scoped restoration");
   assert.equal(legacyReads,0,"Folder reservation must not start legacy restoration");
+  // Read-only file plans and viewer commands must not wait for either the
+  // legacy log or every other archive. Keep all 2165 existing records intact.
+  const requests=Object.create(null);
+  for(let i=0;i<2165;i++){
+    const sourcePath="IMAGES/image"+String(i+1).padStart(5,"0")+".jpg";
+    requests[sourcePath]={sourcePath,state:"complete",clickConfirmedAt:1,downloadIds:[]};
+  }
+  db[originalScope.harvestStorageKey]={
+    schema:"rar-rescue-capture-v3",scopeId:originalScope.scopeId,
+    sourcePathsCount:3027,requests,downloads:Object.create(null)
+  };
+  const plan=await within(call({kind:"RR_HARVEST_PLAN",scope:originalScope},
+    {frameId:0,tab:{id:21,url:"https://disk.yandex.ru/client/disk"},
+     url:"https://disk.yandex.ru/client/disk"}));
+  assert(plan.ok);
+  assert.equal(plan.processedSourcePaths.length,2165);
+  assert.equal(plan.retryableSourcePaths.length,0);
+  assert.equal(plan.requests,undefined);
+  assert.equal(legacyReads,0);
+  assert.equal(readyRestoreReads,0);
+  const viewer=await within(call({kind:"RR_FRAME_CALL",frameId:7,
+    payload:{kind:"RR_SENSOR_LIST"}},
+    {frameId:0,tab:{id:21,url:"https://disk.yandex.ru/client/disk"},
+     url:"https://disk.yandex.ru/client/disk"}));
+  assert(viewer.ok);
+  assert.equal(viewer.items[0].name,"README.TXT");
+  assert.equal(legacyReads,0);
+  assert.equal(readyRestoreReads,0);
   void vm.runInContext("rawRouter.ready",ctx);
   assert.equal(readyRestoreReads,1,"Explicit capture state request must start lazy restoration");
   assert.equal(legacyReads,1,"Legacy lookup must run only after explicit capture request");
