@@ -581,7 +581,22 @@ chrome.downloads.onChanged.addListener(delta => {
   void (async () => {
     await ready;
     const item=(await chrome.downloads.search({id:delta.id}))[0] || {};
-    if(await rawRouter.changed(delta.id,item))return;
+    if(await rawRouter.changed(delta.id,item)){
+      const owner=rawRouter.ownerForDownloadId(delta.id);
+      const row=owner?.state.downloads[String(delta.id)];
+      const source=row?.sourcePath;
+      const request=source?owner.state.requests[source]:null;
+      // Emit a wake only for the current issued click in this archive.
+      // Download IDs are browser-issued; never infer ownership by filename.
+      if(owner?.scope&&source&&request?.downloadIds?.includes(delta.id)&&
+         owner.state.phase==="collecting"){
+        await notify(owner.state.tabId,{
+          kind:"RR_HARVEST_TERMINAL",scopeId:owner.scope.scopeId,
+          sourcePath:source,downloadId:delta.id,state:delta.state.current
+        });
+      }
+      return;
+    }
     const record=findByDownloadId(delta.id);
     if(!record)return;
     await completeFromChrome(record,item);
