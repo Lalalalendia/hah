@@ -1,5 +1,5 @@
 /* Manifest V3 service worker. All state stays on the user's machine. */
-importScripts("common.js","archive-scope.js","harvest-worker.js","harvest-router.js","viewer-channel.js");
+importScripts("common.js","archive-scope.js","harvest-worker.js","harvest-router.js","viewer-channel.js","message-guard.js");
 "use strict";
 
 const viewerChannel=new globalThis.RarRescueViewerChannel(chrome);
@@ -170,8 +170,23 @@ chrome.action.onClicked.addListener(async tab => {
   catch (_) { /* Content script not yet loaded. */ }
 });
 
-chrome.runtime.onMessage.addListener((message, sender, respond) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !String(message.kind || "").startsWith("RR_")) return false;
+  const guard=new RarRescueMessageGuard(message,sendResponse,{
+    onTimeout:details=>{
+      // Diagnostic only: do not log private file paths, signed URLs or tokens.
+      void (async()=>{
+        let tab=null;
+        try{tab=await chrome.tabs.get(sender.tab?.id);}catch(_){}
+        await chrome.storage.local.set({rr_last_command_failure_v1:{
+          ...details,at:new Date().toISOString(),
+          tabActive:tab?.active??null,tabFrozen:tab?.frozen??null,
+          tabDiscarded:tab?.discarded??null
+        }});
+      })().catch(()=>{});
+    }
+  });
+  const respond=payload=>guard.reply(payload);
   (async () => {
     await ready;
     if (!pageAllowed(sender)) throw new Error("Not a Yandex Disk tab");
@@ -317,6 +332,11 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if(message.kind==="RR_HARVEST_REPORT") {
       if(sender.frameId!==0)throw new Error("Only parent frame can export raw capture");
       respond(await rawRouter.report(sender,message.scope||null));return;
+    }
+    if(message.kind==="RR_HARVEST_PLAN") {
+      if(sender.frameId!==0)throw Error("Only parent frame can inspect raw source plan");
+      const worker=await rawRouter.bind(sender,message.scope||null);
+      respond(await worker.plan());return;
     }
     if(message.kind==="RR_PREPARE_RESUME") {
       if(sender.frameId!==0)throw new Error("Only main recovery panel can inspect or defer transfers");
