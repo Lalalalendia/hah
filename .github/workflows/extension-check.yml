@@ -27,6 +27,8 @@ jobs:
       - name: Static JavaScript validation
         run: |
           node --check extension/archive-scope.js
+          node --check extension/archive-resume.js
+          node --check extension/tests/archive-resume.cjs
           node --check extension/tests/archive-scope.cjs
           node --check extension/tests/title-resolution.cjs
           node --check extension/tests/web-ui-scope.cjs
@@ -52,6 +54,8 @@ jobs:
           node --check extension/tests/inventory-auto-retry.cjs
           node --check extension/tests/harvest-router.cjs
           node --check extension/tests/output-reservation.cjs
+          node --check extension/tests/reservation-deadlock.cjs
+          node --check extension/tests/scoped-resume-fast.cjs
           node --check extension/tests/output-reservation-no-restore.cjs
           node --check extension/tests/resume-owned-output.cjs
           node --check extension/tests/harvest-120s.cjs
@@ -65,6 +69,7 @@ jobs:
       - name: Security and manifest smoke tests
         run: |
           node extension/tests/archive-scope.cjs
+          node extension/tests/archive-resume.cjs
           node extension/tests/title-resolution.cjs
           node extension/tests/web-ui-scope.cjs
           node extension/tests/smoke.cjs
@@ -83,6 +88,8 @@ jobs:
           node extension/tests/checkpoint-resume.cjs
           node extension/tests/inventory-auto-retry.cjs
           node extension/tests/output-reservation.cjs
+          node extension/tests/reservation-deadlock.cjs
+          node extension/tests/scoped-resume-fast.cjs
           node extension/tests/output-reservation-no-restore.cjs
           node extension/tests/resume-owned-output.cjs
           node extension/tests/recovery-plan.cjs
@@ -96,6 +103,6 @@ jobs:
       - name: Upload ready-to-install extension directory
         uses: actions/upload-artifact@v4
         with:
-          name: rar-rescue-v01510
+          name: rar-rescue-v01511
           path: extension/
           retention-days: 7
