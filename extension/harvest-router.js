@@ -13,7 +13,14 @@ class HarvestRouter {
     this.api=api;this.utils=utils;this.scopeApi=scopeApi;this.Worker=Worker;
     this.legacy=new Worker(api,utils);
     this.workers=new Map();
-    this.ready=this.restore();
+    // Loading thousands of download records on every MV3 wake can delay even
+    // read-only iframe detection. Restore only when a capture command or
+    // browser download event actually needs the journal.
+    this._ready=null;
+  }
+  get ready(){
+    if(!this._ready)this._ready=this.restore();
+    return this._ready;
   }
   canonical(raw){
     return this.scopeApi.restoreScope(raw);
