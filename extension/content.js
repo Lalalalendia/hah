@@ -43,15 +43,47 @@
     ],fingerprint);
     return {...resolved,fingerprint};
   }
+  // The output folder is already reserved on a resumed capture. Verifying
+  // the persisted owner is a read-only lookup and needs no MV3 round trip.
+  // Only NEW roots must pass through the single-writer background broker.
+  async function ensureOutputRoot(detected){
+    const key="rr_output_owners_v15";
+    const root=detected.outputRoot.normalize("NFC").toLowerCase();
+    let owners;
+    try{
+      const read=await chrome.storage.local.get(key);
+      owners=read?.[key];
+    }catch(error){
+      throw Error("Не удалось проверить ранее закреплённую папку: "+
+        String(error?.message||error).slice(0,120));
+    }
+    if(owners&&Object.prototype.hasOwnProperty.call(owners,root)){
+      if(owners[root]!==detected.scopeId)
+        throw Error("Папка выгрузки уже закреплена за другим архивом; файлы не смешиваются");
+      // Already committed for THIS exact scope by the background owner map.
+      // A non-mutating resume must not wait for a stopped service worker.
+      return {existing:true};
+    }
+    // Never bypass the single-writer collision gate for an unreserved root.
+    // The service worker may die after committing: reconcile its persisted
+    // result once, read-only, rather than issuing a duplicate reservation.
+    try{
+      await send({kind:"RR_RESERVE_OUTPUT_ROOT",scope:detected});
+    }catch(error){
+      const after=(await chrome.storage.local.get(key))?.[key]||{};
+      if(after[root]!==detected.scopeId)throw error;
+    }
+    return {existing:false};
+  }
   async function ensureArchiveScope(){
     const resolved=archiveTitleResolution();
     const detected=RarRescueArchiveScope.fromYandexViewer(
       location.href,resolved.archiveName,resolved.fingerprint);
     if(scope&&!RarRescueArchiveScope.sameScope(scope,detected))
       throw Error("The active archive changed during recovery");
-    // Output ownership must be allocated by the single background worker,
-    // not by two independent tabs racing storage.get/storage.set.
-    await send({kind:"RR_RESERVE_OUTPUT_ROOT",scope:detected});
+    const reservation=await ensureOutputRoot(detected);
+    if(reservation.existing)
+      show("Возобновляю уже закреплённую папку этого архива; новый запрос регистрации не нужен.");
     scope=detected;
     verifiedViewerTitle=resolved.viewerExpectedTitle;
     if(resolved.fallback)show("Яндекс не передал имя архива. Использую папку "+
