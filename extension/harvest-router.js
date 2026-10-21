@@ -160,6 +160,11 @@ class HarvestRouter {
     }
     return worker.determine(item);
   }
+  ownerForDownloadId(id){
+    const owners=[...this.workers.values()].filter(w=>
+      Object.prototype.hasOwnProperty.call(w.state.downloads,String(id)));
+    return owners.length===1?owners[0]:null;
+  }
   async changed(id,item){
     await this.ready;
     const owners=[...this.workers.values(),this.legacy].filter(w=>
