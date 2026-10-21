@@ -54,7 +54,14 @@ async function within(p,ms=600){
   })]);}finally{clearTimeout(t);}
 }
 (async()=>{
-  assert.equal(readyRestoreReads,1,"Background router restore must be stalled");
+  assert.equal(readyRestoreReads,0,"Cold worker must not eagerly load archived captures");
+  // Bootstrap remains safe even if restoration is later initiated and stalls.
+  const originalScope=scopeApi.fromYandexViewer("https://disk.yandex.ru/client/disk",
+    "Example.rar","0123456789abcdef");
+  assert((await within(request(originalScope,"https://disk.yandex.ru/client/disk"))).ok);
+  assert.equal(readyRestoreReads,0,"Folder reservation must not start legacy restoration");
+  void vm.runInContext("rawRouter.ready",ctx);
+  assert.equal(readyRestoreReads,1,"Explicit capture state request must start lazy restoration");
   // Browser scan and sensor reports must also work before any large
   // session is loaded, otherwise the only user-visible button remains gray.
   function call(payload,sender){
@@ -73,7 +80,7 @@ async function within(p,ms=600){
   const url="https://disk.yandex.ru/client/disk";
   assert.equal((await within(request(one,url))).ok,true);
   assert.equal((await within(request(one,url))).ok,true,"Same scope is idempotent");
-  assert.equal(outputReads,2);
+  assert.equal(outputReads,3);
   const collision=await within(request(two,"https://disk.yandex.ru/d/other"));
   assert.equal(collision.ok,false);
   assert.match(collision.error,/reserved by another archive/);
