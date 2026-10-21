@@ -49,8 +49,9 @@ async function find(storage,scopeApi,rawUrl,frame,detected){
   }
   // Exact source identity first. Only if the Yandex title/fingerprint
   // changed may we examine a few historic scopes on the same viewer path.
-  const exact=candidates.filter(x=>x.sourceKey===detected.sourceKey);
-  const selected=exact.length?exact:candidates;
+  const selected=candidates.sort((a,b)=>
+    Number(b.sourceKey===detected.sourceKey)-
+    Number(a.sourceKey===detected.sourceKey));
   if(selected.length>8)
     throw Error("Слишком много сохранённых заданий этого веб-просмотрщика; нельзя выбрать архив автоматически");
   const matches=[];
