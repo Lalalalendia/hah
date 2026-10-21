@@ -188,13 +188,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Lightweight setup and viewer discovery never need the old download
     // journal. A cold MV3 worker must not wait to restore thousands of rows
     // before it can find the iframe or reserve a folder.
-    if(["RR_RESERVE_OUTPUT_ROOT","RR_SCAN_FRAMES","RR_SENSOR_REPORT","RR_SENSOR_PICKED"]
-       .includes(message.kind)){
+    if(["RR_RESERVE_OUTPUT_ROOT","RR_SCAN_FRAMES","RR_SENSOR_REPORT","RR_SENSOR_PICKED",
+        "RR_HARVEST_PLAN","RR_FRAME_CALL"].includes(message.kind)){
       if(!pageAllowed(sender))throw Error("Not a Yandex Disk tab");
       const tabId=sender.tab.id;
       if(message.kind==="RR_RESERVE_OUTPUT_ROOT"){
         if(sender.frameId!==0)throw Error("Only main archive panel may reserve output");
         respond(await reserveOutputRoot(sender,message.scope));return;
+      }
+      if(message.kind==="RR_HARVEST_PLAN"){
+        if(sender.frameId!==0)throw Error("Only main archive panel may inspect a queue plan");
+        const scope=RarRescueArchiveScope.restoreScope(message.scope);
+        if(!scope||!RarRescueArchiveScope.matchesTab(scope,sender.tab.url))
+          throw Error("Archive identity does not match the current Yandex tab");
+        // Read only this archive's journal; never hydrate all previously
+        // opened archives just to skip already-downloaded source paths.
+        const data=await chrome.storage.local.get(scope.harvestStorageKey);
+        respond(RarRescueHarvestWorker.planFromState(
+          data[scope.harvestStorageKey],scope.scopeId));
+        return;
+      }
+      if(message.kind==="RR_FRAME_CALL"){
+        if(sender.frameId!==0)throw Error("Only main archive panel may call viewer");
+        const frameId=Number(message.frameId),payload=message.payload||{};
+        if(!Number.isInteger(frameId)||frameId<0)
+          throw Error("Invalid Yandex viewer frame");
+        if(!["RR_SENSOR_LIST","RR_SENSOR_TRIGGER","RR_SENSOR_SCROLL",
+          "RR_SENSOR_CRAWL_BEGIN","RR_SENSOR_CRAWL_STEP","RR_SENSOR_CRAWL_STATUS",
+          "RR_SENSOR_NAV_START","RR_SENSOR_NAV_GOTO","RR_SENSOR_NAV_STATUS"].includes(payload.kind))
+          throw Error("Unsupported viewer command");
+        const delivery=await viewerChannel.invoke(tabId,frameId,payload);
+        respond({...delivery.result,viewerFrameId:delivery.frameId,
+          viewerReconnected:delivery.reconnected});
+        return;
       }
       if(message.kind==="RR_SCAN_FRAMES"){
         if(sender.frameId!==0)throw Error("Only main archive panel may scan");
@@ -267,20 +293,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       respond({ok:true,matches});
       return;
     }
-    if (message.kind === "RR_FRAME_CALL") {
-      if (sender.frameId !== 0) throw new Error("Only the top-level panel can call viewer");
-      const frameId = Number(message.frameId);
-      if (!Number.isInteger(frameId) || frameId < 0) throw new Error("Invalid viewer frame");
-      const payload = message.payload || {};
-      if (!["RR_SENSOR_LIST", "RR_SENSOR_TRIGGER", "RR_SENSOR_SCROLL",
-        "RR_SENSOR_CRAWL_BEGIN", "RR_SENSOR_CRAWL_STEP", "RR_SENSOR_CRAWL_STATUS", "RR_SENSOR_NAV_START", "RR_SENSOR_NAV_GOTO", "RR_SENSOR_NAV_STATUS"].includes(payload.kind)) {
-        throw new Error("Unsupported viewer command");
-      }
-      const delivery=await viewerChannel.invoke(tabId,frameId,payload);
-      respond({...delivery.result,viewerFrameId:delivery.frameId,
-        viewerReconnected:delivery.reconnected});
-      return;
-    }
     if(message.kind==="RR_HARVEST_BEGIN") {
       if(sender.frameId!==0)throw new Error("Only parent frame can start raw capture");
       // The previous strict attempt may still respond much later. Preserve
@@ -339,11 +351,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if(message.kind==="RR_HARVEST_REPORT") {
       if(sender.frameId!==0)throw new Error("Only parent frame can export raw capture");
       respond(await rawRouter.report(sender,message.scope||null));return;
-    }
-    if(message.kind==="RR_HARVEST_PLAN") {
-      if(sender.frameId!==0)throw Error("Only parent frame can inspect raw source plan");
-      const worker=await rawRouter.bind(sender,message.scope||null);
-      respond(await worker.plan());return;
     }
     if(message.kind==="RR_PREPARE_RESUME") {
       if(sender.frameId!==0)throw new Error("Only main recovery panel can inspect or defer transfers");
