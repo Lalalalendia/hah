@@ -61,6 +61,9 @@ async function within(p,ms=600){
   // Bootstrap remains safe even if restoration is later initiated and stalls.
   const originalScope=scopeApi.fromYandexViewer("https://disk.yandex.ru/client/disk",
     "Example.rar","0123456789abcdef");
+  // This is a RESUME of an already reserved root. A genuinely new root
+  // must fail closed if the historical owner registry cannot be read.
+  db.rr_output_owners_v15={[originalScope.outputRoot.toLowerCase()]:originalScope.scopeId};
   assert((await within(request(originalScope,"https://disk.yandex.ru/client/disk"))).ok);
   assert.equal(readyRestoreReads,0,"Folder reservation must not start scoped restoration");
   assert.equal(legacyReads,0,"Folder reservation must not start legacy restoration");
